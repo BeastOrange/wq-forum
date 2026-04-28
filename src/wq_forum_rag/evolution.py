@@ -6,6 +6,7 @@ from typing import Any
 from wq_forum_rag.knowledge import DRAFT, PUBLISHED, KnowledgePage, KnowledgeStore
 from wq_forum_rag.search import ForumSearcher
 from wq_forum_rag.storage import ForumStore
+from wq_forum_rag.wiki import WikiService
 
 AUTO_PUBLISH_CONFIDENCE = 0.85
 
@@ -205,6 +206,17 @@ class EvolutionService:
             "blocking_count": sum(1 for item in issues if item["severity"] == "block"),
             "warning_count": sum(1 for item in issues if item["severity"] == "warn"),
         }
+
+    def graph_query(self, slug: str, *, depth: int = 1, relation_type: str | None = None) -> dict[str, Any]:
+        return WikiService(self.db_path).graph_query(slug, depth=depth, relation_type=relation_type)
+
+    def export_wiki(
+        self,
+        output_dir: str | Path = ".cache/wiki",
+        *,
+        include_drafts: bool = False,
+    ) -> dict[str, Any]:
+        return WikiService(self.db_path).export_wiki(output_dir, include_drafts=include_drafts)
 
     def _chunk_rows(self) -> list[dict[str, Any]]:
         with ForumStore(self.db_path) as store:

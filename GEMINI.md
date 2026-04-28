@@ -16,6 +16,8 @@ Use the `wq-forum-rag` MCP server as the source of truth for local WorldQuant fo
    - `refines` for more specific guidance
    - `conflicts_with` when the new page contradicts an existing page
 8. Run `lint_knowledge(slug=...)` after proposing a page.
+9. Use `graph_query(slug, depth=1)` when a topic depends on related pages or backlinks.
+10. Use `export_knowledge_wiki(output_dir=".cache/wiki")` after a batch of useful pages is published, so humans can review the Markdown Wiki.
 
 ## Tool Preference
 
@@ -23,3 +25,9 @@ Use the `wq-forum-rag` MCP server as the source of truth for local WorldQuant fo
 - Use `find_by_exact` for topic IDs, URLs, operator names, error text, and exact phrases.
 - Use `get_post` when a cited forum topic needs full context.
 - Use `related_posts` when expanding from a known useful topic.
+- Use `graph_query` when the answer should follow typed relations such as `supports`, `refines`, or `conflicts_with`.
+- Use `export_knowledge_wiki` for review snapshots, Obsidian-style browsing, or handoff.
+
+## Current Boundary
+
+This project implements the core self-evolving loop from the referenced Wiki/GBrain pattern: raw forum evidence, compiled knowledge pages, typed links, lint, graph traversal, and Markdown export. It does not automatically call an LLM API or scan arbitrary local files; Gemini CLI remains responsible for reading context and deciding when to call write tools.

@@ -138,6 +138,32 @@ def publish_knowledge_page(slug: str, db: str | None = None) -> dict[str, Any]:
     return {"db": str(_resolve_db_path(db)), **result}
 
 
+def graph_query(
+    slug: str,
+    db: str | None = None,
+    depth: int = 1,
+    relation_type: str | None = None,
+) -> dict[str, Any]:
+    result = EvolutionService(_resolve_db_path(db)).graph_query(
+        slug,
+        depth=depth,
+        relation_type=relation_type,
+    )
+    return {"db": str(_resolve_db_path(db)), **result}
+
+
+def export_knowledge_wiki(
+    db: str | None = None,
+    output_dir: str = ".cache/wiki",
+    include_drafts: bool = False,
+) -> dict[str, Any]:
+    result = EvolutionService(_resolve_db_path(db)).export_wiki(
+        output_dir,
+        include_drafts=include_drafts,
+    )
+    return {"db": str(_resolve_db_path(db)), **result}
+
+
 def build_mcp_server(default_db: str | Path | None = None) -> FastMCP:
     if default_db:
         os.environ.setdefault("WQ_FORUM_RAG_DB", str(default_db))
@@ -153,6 +179,8 @@ def build_mcp_server(default_db: str | Path | None = None) -> FastMCP:
     server.tool()(link_knowledge_pages)
     server.tool()(lint_knowledge)
     server.tool()(publish_knowledge_page)
+    server.tool()(graph_query)
+    server.tool()(export_knowledge_wiki)
     return server
 
 

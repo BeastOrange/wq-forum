@@ -8,7 +8,9 @@ from typer.testing import CliRunner
 from wq_forum_rag.cli import app
 from wq_forum_rag.mcp_server import (
     build_evolution_context,
+    export_knowledge_wiki,
     get_knowledge_page,
+    graph_query,
     lint_knowledge,
     propose_knowledge_page,
     search_knowledge,
@@ -163,3 +165,66 @@ def test_cli_evolve_context_and_show_commands(tmp_path: Path) -> None:
     )
     assert show.exit_code == 0
     assert "Neutralization guide" in show.stdout
+
+
+def test_graph_query_and_wiki_export(tmp_path: Path) -> None:
+    db_path = _index_fixture(tmp_path)
+    service = EvolutionService(db_path)
+    service.propose_knowledge_page(
+        slug="alpha/neutralization-guide",
+        title="Neutralization guide",
+        summary="Neutralization settings should be evaluated with alpha decay evidence.",
+        body="Use original forum evidence when deciding whether subindustry neutralization fits.",
+        source_topic_ids=["t1"],
+        confidence=0.9,
+    )
+    service.propose_knowledge_page(
+        slug="alpha/decay-checklist",
+        title="Decay checklist",
+        summary="Decay checks should preserve original alpha context before comparison.",
+        body="Compare decay behavior with cited neutralization evidence before publishing conclusions.",
+        source_topic_ids=["t2"],
+        confidence=0.91,
+        links=[
+            {
+                "target_slug": "alpha/neutralization-guide",
+                "relation_type": "refines",
+                "weight": 1.2,
+            }
+        ],
+    )
+
+    graph = graph_query("alpha/decay-checklist", db=str(db_path), depth=1)
+    assert {node["slug"] for node in graph["nodes"]} == {
+        "alpha/decay-checklist",
+        "alpha/neutralization-guide",
+    }
+    assert graph["edges"][0]["relation_type"] == "refines"
+
+    output_dir = tmp_path / "wiki"
+    exported = export_knowledge_wiki(db=str(db_path), output_dir=str(output_dir))
+    assert exported["page_count"] == 2
+    assert (output_dir / "index.md").exists()
+    assert (output_dir / "log.md").exists()
+    assert (output_dir / "hot.md").exists()
+
+    page_text = (output_dir / "alpha" / "decay-checklist.md").read_text(encoding="utf-8")
+    assert "status: published" in page_text
+    assert "confidence: 0.910" in page_text
+    assert "forum topic `t2`" in page_text
+    assert "[[alpha/neutralization-guide]]" in page_text
+
+    runner = CliRunner()
+    cli_graph = runner.invoke(
+        app,
+        ["knowledge-graph", "alpha/decay-checklist", "--db", str(db_path), "--depth", "1"],
+    )
+    assert cli_graph.exit_code == 0
+    assert "alpha/neutralization-guide" in cli_graph.stdout
+
+    cli_export = runner.invoke(
+        app,
+        ["knowledge-export", "--db", str(db_path), "--out", str(tmp_path / "wiki-cli")],
+    )
+    assert cli_export.exit_code == 0
+    assert "index.md" in cli_export.stdout

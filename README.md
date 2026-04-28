@@ -107,6 +107,8 @@ Claude Desktop / 兼容 MCP 客户端配置示例：
 - `link_knowledge_pages(source_slug, target_slug, relation_type, db=None, weight=1.0, confidence=0.8)`
 - `lint_knowledge(db=None, slug=None)`
 - `publish_knowledge_page(slug, db=None)`
+- `graph_query(slug, db=None, depth=1, relation_type=None)`
+- `export_knowledge_wiki(db=None, output_dir=".cache/wiki", include_drafts=False)`
 
 ## 自进化知识层
 
@@ -129,6 +131,23 @@ Claude Desktop / 兼容 MCP 客户端配置示例：
 
 这套设计刻意不内置外部 LLM API。LLM 的阅读、总结和判断由 MCP 客户端完成；本项目只负责确定性存储、来源校验、低风险自动发布、图谱连边和 lint。
 
+当前已实现的 PDF 对齐能力：
+
+- Raw layer：论坛 JSON 解析、SQLite 原帖与 chunk 索引。
+- Wiki layer：可沉淀的知识页、来源绑定、Markdown Wiki 导出。
+- Schema / operation layer：MCP 工具约束 Gemini CLI 的 ingest、query、lint、publish 流程。
+- Progressive disclosure：优先返回已发布知识页，再返回完整论坛证据。
+- Typed graph：`knowledge_links` 记录 typed edges，支持 backlink boost 和 `graph_query` 多跳遍历。
+- Hot / log / index：`export_knowledge_wiki` 生成 `index.md`、`log.md`、`hot.md` 和页面 Markdown。
+
+尚未实现或后续可继续增强：
+
+- 自动扫描外部目录的 delta manifest。
+- PDF/截图/音频/视频等多模态摄入。
+- 定时任务或后台 always-on ingestion。
+- LLM 自动矛盾识别；当前只支持客户端提交 `conflicts_with` 后由系统阻止自动发布。
+- 大规模向量数据库或 seekdb 类基础设施；当前仍以轻量 SQLite 为主。
+
 对应 CLI 也提供了本地检查入口：
 
 ```bash
@@ -136,6 +155,8 @@ wq-forum-rag evolve-context "alpha decay neutralization" --db .cache/forum.sqlit
 wq-forum-rag knowledge-search "neutralization" --db .cache/forum.sqlite3 --json
 wq-forum-rag knowledge-show alpha/neutralization-decay --db .cache/forum.sqlite3
 wq-forum-rag knowledge-lint --db .cache/forum.sqlite3
+wq-forum-rag knowledge-graph alpha/neutralization-decay --db .cache/forum.sqlite3 --depth 2
+wq-forum-rag knowledge-export --db .cache/forum.sqlite3 --out .cache/wiki
 ```
 
 ## 精度 / 性能策略

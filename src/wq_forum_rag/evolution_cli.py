@@ -68,3 +68,31 @@ def register_evolution_commands(app: typer.Typer) -> None:
         slug: str | None = typer.Option(None, "--slug"),
     ) -> None:
         console.print_json(data=EvolutionService(db_path).lint_knowledge(slug=slug))
+
+    @app.command("knowledge-graph")
+    def knowledge_graph_command(
+        slug: str = typer.Argument(..., help="Knowledge page slug"),
+        db_path: Path = typer.Option(DEFAULT_DB_PATH, "--db", exists=True, dir_okay=False),
+        depth: int = typer.Option(1, "--depth", min=0, max=5),
+        relation_type: str | None = typer.Option(None, "--relation"),
+    ) -> None:
+        console.print_json(
+            data=EvolutionService(db_path).graph_query(
+                slug,
+                depth=depth,
+                relation_type=relation_type,
+            )
+        )
+
+    @app.command("knowledge-export")
+    def knowledge_export_command(
+        db_path: Path = typer.Option(DEFAULT_DB_PATH, "--db", exists=True, dir_okay=False),
+        output_dir: Path = typer.Option(Path(".cache/wiki"), "--out", file_okay=False),
+        include_drafts: bool = typer.Option(False, "--include-drafts"),
+    ) -> None:
+        console.print_json(
+            data=EvolutionService(db_path).export_wiki(
+                output_dir,
+                include_drafts=include_drafts,
+            )
+        )
