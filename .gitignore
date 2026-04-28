@@ -1,0 +1,13 @@
+.cache/
+.gemini/
+.pytest_cache/
+.venv/
+__pycache__/
+*.py[cod]
+*.sqlite3
+*.db
+*.egg-info/
+dist/
+build/
+WQPCommunityState_*.json
+深度解析 LLM Wiki _ Obsidian-Wiki _ GBrain：Agent 时代知识的“自组织”与“自进化”.pdf

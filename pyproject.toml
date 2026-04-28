@@ -1,0 +1,30 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wq-forum-rag"
+version = "0.1.0"
+description = "Offline lightweight RAG and MCP wrapper for WorldQuant forum exports"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "beautifulsoup4>=4.12,<5",
+  "mcp>=1,<2",
+  "rich>=13.7,<15",
+  "typer>=0.12,<1",
+]
+
+[project.optional-dependencies]
+local-embeddings = ["fastembed>=0.3,<1"]
+dev = ["pytest>=8,<9"]
+
+[project.scripts]
+wq-forum-rag = "wq_forum_rag.cli:main"
+wq-forum-rag-mcp = "wq_forum_rag.mcp_server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wq_forum_rag"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
