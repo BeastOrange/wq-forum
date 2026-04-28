@@ -9,6 +9,8 @@ from rich.console import Console
 from rich.table import Table
 
 from wq_forum_rag.evolution_cli import register_evolution_commands
+from wq_forum_rag.source_cli import register_source_commands
+from wq_forum_rag.search_index import CachedEmbeddingBackend, fts_candidates, rebuild_search_index
 
 DEFAULT_DB_PATH = Path(".cache/forum.sqlite3")
 app = typer.Typer(no_args_is_help=True, help="Offline lightweight RAG for WQ forum exports")
@@ -55,7 +57,15 @@ class ForumIndexService:
                     fingerprint.items(),
                 )
             total = store.conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0]
-        return {"status": "rebuilt" if rebuild else "indexed", "db": str(self.db_path), "json": str(source), "indexed_topics": total, **stats}
+        search_index = rebuild_search_index(self.db_path)
+        return {
+            "status": "rebuilt" if rebuild else "indexed",
+            "db": str(self.db_path),
+            "json": str(source),
+            "indexed_topics": total,
+            "search_index": search_index,
+            **stats,
+        }
 
     def search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         with self.storage.ForumStore(self.db_path) as store:
@@ -82,8 +92,15 @@ class ForumIndexService:
                     """
                 ).fetchall()
             ]
+        candidates = set(fts_candidates(self.db_path, query, kind="forum_chunk"))
+        if candidates:
+            rows = [row for row in rows if row["chunk_id"] in candidates]
         topic_meta = {row["topic_id"]: row for row in rows}
-        hits = self.search_mod.ForumSearcher(rows).search(query=query, top_k=max(top_k * 3, top_k))
+        backend = CachedEmbeddingBackend(self.db_path)
+        hits = self.search_mod.ForumSearcher(rows, embedding_backend=backend).search(
+            query=query,
+            top_k=max(top_k * 3, top_k),
+        )
         results: list[dict[str, Any]] = []
         seen: set[str] = set()
         for hit in hits:
@@ -225,7 +242,6 @@ class ForumIndexService:
         same_community = [item for item in ranked if item["community_id"] == base["community_id"]]
         return (same_community + [item for item in ranked if item["community_id"] != base["community_id"]])[:top_k]
 
-
 def _render_search(results: list[dict[str, Any]]) -> None:
     table = Table(title=f"Top {len(results)}")
     for name in ("topic_id", "community_title", "title", "author", "score"):
@@ -264,8 +280,16 @@ def show_command(
     console.print_json(data=post)
 
 
+@app.command("search-reindex")
+def search_reindex_command(
+    db_path: Path = typer.Option(DEFAULT_DB_PATH, "--db", exists=True, dir_okay=False),
+) -> None:
+    console.print_json(data=rebuild_search_index(db_path))
+
+
 def main() -> None:
     app()
 
 
 register_evolution_commands(app)
+register_source_commands(app)

@@ -25,9 +25,12 @@ Use the `wq-forum-rag` MCP server as the source of truth for local WorldQuant fo
 - Use `find_by_exact` for topic IDs, URLs, operator names, error text, and exact phrases.
 - Use `get_post` when a cited forum topic needs full context.
 - Use `related_posts` when expanding from a known useful topic.
+- Use `source_status` before ingesting an external text/Markdown directory when you need a dry-run delta without mutating the manifest.
+- Use `source_ingest_plan(..., commit=True)` only after reviewing the plan; plain `source_ingest_plan(...)` stays read-only.
 - Use `graph_query` when the answer should follow typed relations such as `supports`, `refines`, or `conflicts_with`.
 - Use `export_knowledge_wiki` for review snapshots, Obsidian-style browsing, or handoff.
+- Use `rebuild_search_index` after bulk indexing or publishing many knowledge pages, so FTS candidates stay current.
 
 ## Current Boundary
 
-This project implements the core self-evolving loop from the referenced Wiki/GBrain pattern: raw forum evidence, compiled knowledge pages, typed links, lint, graph traversal, and Markdown export. It does not automatically call an LLM API or scan arbitrary local files; Gemini CLI remains responsible for reading context and deciding when to call write tools.
+This project implements the core self-evolving loop from the referenced Wiki/GBrain pattern: raw forum evidence, compiled knowledge pages, typed links, lint, graph traversal, Markdown export, text/Markdown-only delta manifest, and SQLite FTS + embedding-cache retrieval. It does not automatically call an LLM API or ingest arbitrary binary files; Gemini CLI remains responsible for reading context and deciding when to call write tools.

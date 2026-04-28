@@ -100,6 +100,8 @@ Claude Desktop / 兼容 MCP 客户端配置示例：
 - `get_post(topic_id, db=None)`
 - `find_by_exact(value, db=None, community=None, top_k=5)`
 - `related_posts(topic_id, db=None, top_k=5)`
+- `source_status(source, db=None)`
+- `source_ingest_plan(source, db=None, commit=False)`
 - `build_evolution_context(query, db=None, top_k=5)`
 - `propose_knowledge_page(slug, title, summary, body, source_topic_ids, confidence, db=None, links=None, auto_publish=True)`
 - `search_knowledge(query, db=None, top_k=5, include_drafts=False)`
@@ -109,6 +111,7 @@ Claude Desktop / 兼容 MCP 客户端配置示例：
 - `publish_knowledge_page(slug, db=None)`
 - `graph_query(slug, db=None, depth=1, relation_type=None)`
 - `export_knowledge_wiki(db=None, output_dir=".cache/wiki", include_drafts=False)`
+- `rebuild_search_index(db=None)`
 
 ## 自进化知识层
 
@@ -139,14 +142,15 @@ Claude Desktop / 兼容 MCP 客户端配置示例：
 - Progressive disclosure：优先返回已发布知识页，再返回完整论坛证据。
 - Typed graph：`knowledge_links` 记录 typed edges，支持 backlink boost 和 `graph_query` 多跳遍历。
 - Hot / log / index：`export_knowledge_wiki` 生成 `index.md`、`log.md`、`hot.md` 和页面 Markdown。
+- Delta manifest：`source_status` / `source_ingest_plan` 可扫描外部文本/Markdown 目录，记录 `sha256`、`mtime_ns`、`size`、`relative_path`，并区分 `new/modified/unchanged/deleted`；默认 dry-run，只有显式 `commit=True` 才会更新 manifest 表。
+- SQLite 混合检索增强：`search-reindex` / `rebuild_search_index` 重建 FTS5 索引，搜索时先用 FTS 候选召回，再复用原 hybrid rerank；embedding 结果按 backend 和内容 hash 持久化缓存。
 
 尚未实现或后续可继续增强：
 
-- 自动扫描外部目录的 delta manifest。
 - PDF/截图/音频/视频等多模态摄入。
 - 定时任务或后台 always-on ingestion。
 - LLM 自动矛盾识别；当前只支持客户端提交 `conflicts_with` 后由系统阻止自动发布。
-- 大规模向量数据库或 seekdb 类基础设施；当前仍以轻量 SQLite 为主。
+- 外部向量数据库或 seekdb 类服务化基础设施；当前已实现 SQLite 本地增强版。
 
 对应 CLI 也提供了本地检查入口：
 
@@ -157,17 +161,21 @@ wq-forum-rag knowledge-show alpha/neutralization-decay --db .cache/forum.sqlite3
 wq-forum-rag knowledge-lint --db .cache/forum.sqlite3
 wq-forum-rag knowledge-graph alpha/neutralization-decay --db .cache/forum.sqlite3 --depth 2
 wq-forum-rag knowledge-export --db .cache/forum.sqlite3 --out .cache/wiki
+wq-forum-rag search-reindex --db .cache/forum.sqlite3
+wq-forum-rag source-status ./notes --db .cache/forum.sqlite3
+wq-forum-rag source-ingest-plan ./notes --db .cache/forum.sqlite3 --commit
 ```
 
 ## 精度 / 性能策略
 
 当前策略优先“本地可跑 + 低维护成本”：
 
-1. 默认检索复用现有 `ForumSearcher`，即 lexical 候选召回 + deterministic dense rerank fallback；不开外部模型也能离线跑。
+1. 默认检索使用 SQLite FTS5 做关键词候选召回，再复用现有 `ForumSearcher` 做 lexical + dense rerank；不开外部模型也能离线跑。
 2. 数据持久化仍是 SQLite，适合本地单文件分发、增量更新和精确查找。
 3. `find_by_exact` 走 `topic_id / url / title / 正文 / 评论 / chunk` 精确词命中，避免把字段名、报错、operator 等导航型问题交给语义检索。
 4. `related_posts` 复用标题检索做近邻召回，优先返回同社区相关主题。
 5. 自进化知识层采用“知识页优先 + 论坛证据回退”的渐进式披露；知识页搜索会叠加轻量 backlink boost。
+6. `embedding_cache` 会缓存文档向量，重复搜索不需要反复 embed 同一内容。
 
 如果后续要提高语义召回，可以保留当前 SQLite 作为元数据与精确查找层，再用 `.[local-embeddings]` 接入 `fastembed` 替换默认 dense backend，做更强的混合召回或 rerank。这样不会破坏现有 CLI/MCP contract。
 

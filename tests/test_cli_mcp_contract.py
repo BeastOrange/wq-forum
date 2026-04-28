@@ -6,7 +6,13 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from wq_forum_rag.cli import app
-from wq_forum_rag.mcp_server import find_by_exact, get_post, related_posts, search_forum
+from wq_forum_rag.mcp_server import (
+    find_by_exact,
+    get_post,
+    rebuild_search_index,
+    related_posts,
+    search_forum,
+)
 
 
 def _write_fixture(json_path: Path) -> None:
@@ -73,6 +79,10 @@ def test_cli_contract_end_to_end(tmp_path: Path) -> None:
     assert search_result.exit_code == 0
     assert "Neutralization checklist" in search_result.stdout
 
+    reindex_result = runner.invoke(app, ["search-reindex", "--db", str(db_path)])
+    assert reindex_result.exit_code == 0
+    assert '"fts_available": true' in reindex_result.stdout
+
     show_result = runner.invoke(app, ["show", "t1", "--db", str(db_path)])
     assert show_result.exit_code == 0
     assert '"topic_id": "t1"' in show_result.stdout
@@ -106,3 +116,6 @@ def test_mcp_tool_contract_without_client(tmp_path: Path) -> None:
     related_payload = related_posts("t1", db=str(db_path), top_k=2)
     assert related_payload["topic_id"] == "t1"
     assert len(related_payload["results"]) <= 2
+
+    reindex_payload = rebuild_search_index(db=str(db_path))
+    assert reindex_payload["fts_available"] is True

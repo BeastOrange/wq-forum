@@ -213,6 +213,14 @@ class ForumStore:
                 FOREIGN KEY(topic_id) REFERENCES topics(topic_id) ON DELETE CASCADE
             );
 
+            CREATE TABLE IF NOT EXISTS embedding_cache (
+                backend_id TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                vector_json TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (backend_id, content_hash)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_topics_content_hash
                 ON topics(content_hash);
             CREATE INDEX IF NOT EXISTS idx_chunks_topic_id

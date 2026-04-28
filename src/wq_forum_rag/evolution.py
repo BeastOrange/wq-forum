@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from wq_forum_rag.knowledge import DRAFT, PUBLISHED, KnowledgePage, KnowledgeStore
-from wq_forum_rag.search import ForumSearcher
+from wq_forum_rag.search_index import search_forum_records, search_knowledge_records
 from wq_forum_rag.storage import ForumStore
 from wq_forum_rag.wiki import WikiService
 
@@ -111,76 +111,17 @@ class EvolutionService:
         *,
         include_drafts: bool = False,
     ) -> list[dict[str, Any]]:
-        with KnowledgeStore(self.db_path) as store:
-            pages = store.list_pages(include_drafts=include_drafts)
-            link_counts = self._link_counts(store)
-        if not pages or top_k <= 0:
-            return []
-        chunks = [
-            {
-                "topic_id": page["slug"],
-                "chunk_id": page["slug"],
-                "community": "knowledge",
-                "title": page["title"],
-                "content": f"{page['summary']}\n{page['body']}",
-            }
-            for page in pages
-        ]
-        hits = ForumSearcher(chunks, dense_weight=0.45, lexical_weight=0.55).search(
-            query,
-            top_k=max(top_k * 3, top_k),
-        )
-        pages_by_slug = {page["slug"]: page for page in pages}
-        ranked: list[dict[str, Any]] = []
-        for hit in hits:
-            page = pages_by_slug[hit.topic_id]
-            boost = min(link_counts.get(hit.topic_id, 0) * 0.04, 0.24)
-            ranked.append(
-                {
-                    "slug": page["slug"],
-                    "title": page["title"],
-                    "summary": page["summary"],
-                    "status": page["status"],
-                    "confidence": page["confidence"],
-                    "score": hit.score + boost,
-                    "backlink_boost": boost,
-                    "snippet": hit.snippet,
-                }
+        with ForumStore(self.db_path) as store:
+            return search_knowledge_records(
+                store.conn,
+                query,
+                top_k=top_k,
+                include_drafts=include_drafts,
             )
-        ranked.sort(key=lambda item: (item["score"], item["confidence"], item["slug"]), reverse=True)
-        return ranked[:top_k]
 
     def search_forum(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
-        rows = self._chunk_rows()
-        if not rows:
-            return []
-        topic_meta = {row["topic_id"]: row for row in rows}
-        hits = ForumSearcher(rows).search(query=query, top_k=max(top_k * 3, top_k))
-        results: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for hit in hits:
-            if hit.topic_id in seen:
-                continue
-            seen.add(hit.topic_id)
-            meta = topic_meta[hit.topic_id]
-            results.append(
-                {
-                    "topic_id": hit.topic_id,
-                    "community_id": meta["community_id"],
-                    "community_title": hit.community,
-                    "title": hit.title,
-                    "author": meta["author"],
-                    "datetime": meta["created_at"],
-                    "url": meta["url"],
-                    "vote_num": meta["vote_num"],
-                    "comment_num": meta["comment_count"],
-                    "snippet": hit.snippet,
-                    "score": hit.score,
-                }
-            )
-            if len(results) >= top_k:
-                break
-        return results
+        with ForumStore(self.db_path) as store:
+            return search_forum_records(store.conn, query, top_k=top_k)
 
     def get_post(self, topic_id: str) -> dict[str, Any] | None:
         with ForumStore(self.db_path) as store:
@@ -218,30 +159,6 @@ class EvolutionService:
     ) -> dict[str, Any]:
         return WikiService(self.db_path).export_wiki(output_dir, include_drafts=include_drafts)
 
-    def _chunk_rows(self) -> list[dict[str, Any]]:
-        with ForumStore(self.db_path) as store:
-            rows = store.conn.execute(
-                """
-                SELECT
-                    c.chunk_id,
-                    c.topic_id,
-                    c.community_id,
-                    c.content,
-                    t.title,
-                    t.community_title,
-                    t.author,
-                    t.created_at,
-                    t.url,
-                    t.vote_num,
-                    t.comment_count
-                FROM chunks AS c
-                JOIN topics AS t ON t.topic_id = c.topic_id
-                WHERE c.chunk_level = 1
-                ORDER BY c.topic_id, c.chunk_level, c.chunk_index
-                """
-            ).fetchall()
-        return [dict(row) for row in rows]
-
     def _lint_page_payload(
         self,
         page: KnowledgePage,
@@ -271,23 +188,6 @@ class EvolutionService:
         if not links:
             issues.append(self._issue(page["slug"], "warn", "orphan_page"))
         return issues
-
-    def _link_counts(self, store: KnowledgeStore) -> dict[str, int]:
-        rows = store.conn.execute(
-            """
-            SELECT target_slug AS slug, COUNT(*) AS count
-            FROM knowledge_links
-            GROUP BY target_slug
-            UNION ALL
-            SELECT source_slug AS slug, COUNT(*) AS count
-            FROM knowledge_links
-            GROUP BY source_slug
-            """
-        ).fetchall()
-        counts: dict[str, int] = {}
-        for row in rows:
-            counts[str(row["slug"])] = counts.get(str(row["slug"]), 0) + int(row["count"])
-        return counts
 
     @staticmethod
     def _issue(slug: str, severity: str, code: str) -> dict[str, str]:

@@ -6,6 +6,12 @@ from typing import Any
 
 from .cli import DEFAULT_DB_PATH, ForumIndexService
 from .evolution import EvolutionService
+from .manifest import SourceManifestService
+from .search_index import (
+    rebuild_search_index as rebuild_search_index_impl,
+    search_knowledge_records,
+)
+from .storage import ForumStore
 
 try:
     from mcp.server.fastmcp import FastMCP
@@ -59,6 +65,18 @@ def related_posts(topic_id: str, db: str | None = None, top_k: int = 5) -> dict[
     return {"topic_id": topic_id, "db": str(_resolve_db_path(db)), "results": posts}
 
 
+def source_status(source: str, db: str | None = None) -> dict[str, Any]:
+    return SourceManifestService(_resolve_db_path(db)).source_status(source)
+
+
+def source_ingest_plan(
+    source: str,
+    db: str | None = None,
+    commit: bool = False,
+) -> dict[str, Any]:
+    return SourceManifestService(_resolve_db_path(db)).source_ingest_plan(source, commit=commit)
+
+
 def build_evolution_context(query: str, db: str | None = None, top_k: int = 5) -> dict[str, Any]:
     context = EvolutionService(_resolve_db_path(db)).build_evolution_context(
         query=query,
@@ -97,11 +115,13 @@ def search_knowledge(
     top_k: int = 5,
     include_drafts: bool = False,
 ) -> dict[str, Any]:
-    results = EvolutionService(_resolve_db_path(db)).search_knowledge(
-        query=query,
-        top_k=top_k,
-        include_drafts=include_drafts,
-    )
+    with ForumStore(_resolve_db_path(db)) as store:
+        results = search_knowledge_records(
+            store.conn,
+            query=query,
+            top_k=top_k,
+            include_drafts=include_drafts,
+        )
     return {"query": query, "db": str(_resolve_db_path(db)), "results": results}
 
 
@@ -164,6 +184,11 @@ def export_knowledge_wiki(
     return {"db": str(_resolve_db_path(db)), **result}
 
 
+def rebuild_search_index(db: str | None = None) -> dict[str, Any]:
+    result = rebuild_search_index_impl(_resolve_db_path(db))
+    return {"db": str(_resolve_db_path(db)), **result}
+
+
 def build_mcp_server(default_db: str | Path | None = None) -> FastMCP:
     if default_db:
         os.environ.setdefault("WQ_FORUM_RAG_DB", str(default_db))
@@ -172,6 +197,8 @@ def build_mcp_server(default_db: str | Path | None = None) -> FastMCP:
     server.tool()(get_post)
     server.tool()(find_by_exact)
     server.tool()(related_posts)
+    server.tool()(source_status)
+    server.tool()(source_ingest_plan)
     server.tool()(build_evolution_context)
     server.tool()(propose_knowledge_page)
     server.tool()(search_knowledge)
@@ -181,6 +208,7 @@ def build_mcp_server(default_db: str | Path | None = None) -> FastMCP:
     server.tool()(publish_knowledge_page)
     server.tool()(graph_query)
     server.tool()(export_knowledge_wiki)
+    server.tool()(rebuild_search_index)
     return server
 
 
