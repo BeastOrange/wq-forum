@@ -2,6 +2,8 @@
 
 `wq-forum-rag` 用于把 `WQPCommunityState_20260428_133740.json` 这类论坛导出文件做成本地离线、轻量、可增量更新的检索层，并同时暴露 CLI 和 MCP 工具。
 
+如果你希望直接让 AI Agent 使用本项目，而不是自己阅读全部细节，请把 [`README_AGENT.md`](README_AGENT.md) 作为 Agent 的首要操作手册。
+
 当前版本刻意保持轻依赖：
 
 - 解析：`beautifulsoup4`
@@ -9,18 +11,37 @@
 - MCP：`mcp`
 - 可选本地向量能力：`fastembed`（extra `local-embeddings`）
 
-## 安装
+## 分享给别人时需要什么
+
+给会使用命令行和 MCP 的用户时，最小交付物是：
+
+- 本项目源码
+- `pyproject.toml` / `uv.lock`
+- 论坛导出 JSON，或已经构建好的 `.cache/forum.sqlite3`
+- 可选：给 AI Agent 看的 [`README_AGENT.md`](README_AGENT.md)
+
+如果直接提供 SQLite 索引，对方可以跳过“离线索引”步骤，只需要把 MCP 配置里的 `WQ_FORUM_RAG_DB` 指到该文件。
+
+## 快速开始
 
 ```bash
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+git clone <repo-url>
+cd wq-forum-rag
+uv sync
+uv run wq-forum-rag --help
+```
+
+项目要求 Python `>=3.11`。如果本机没有合适版本，可以先执行：
+
+```bash
+uv python install 3.11
+uv sync
 ```
 
 如需后续接本地 embedding：
 
 ```bash
-pip install -e ".[local-embeddings]"
+uv sync --extra local-embeddings
 ```
 
 ## 离线索引
@@ -28,7 +49,7 @@ pip install -e ".[local-embeddings]"
 首次建立索引：
 
 ```bash
-wq-forum-rag index \
+uv run wq-forum-rag index \
   --json WQPCommunityState_20260428_133740.json \
   --db .cache/forum.sqlite3 \
   --rebuild
@@ -49,7 +70,7 @@ wq-forum-rag index \
 再次执行：
 
 ```bash
-wq-forum-rag index \
+uv run wq-forum-rag index \
   --json WQPCommunityState_20260428_133740.json \
   --db .cache/forum.sqlite3
 ```
@@ -61,13 +82,13 @@ wq-forum-rag index \
 全文检索：
 
 ```bash
-wq-forum-rag search "alpha decay neutralization" --db .cache/forum.sqlite3 --top-k 5
+uv run wq-forum-rag search "alpha decay neutralization" --db .cache/forum.sqlite3 --top-k 5
 ```
 
 查看单帖：
 
 ```bash
-wq-forum-rag show 12913566170391 --db .cache/forum.sqlite3
+uv run wq-forum-rag show 12913566170391 --db .cache/forum.sqlite3
 ```
 
 ## MCP 用法
@@ -76,7 +97,7 @@ wq-forum-rag show 12913566170391 --db .cache/forum.sqlite3
 
 ```bash
 export WQ_FORUM_RAG_DB=/absolute/path/.cache/forum.sqlite3
-wq-forum-rag-mcp
+uv run wq-forum-rag-mcp
 ```
 
 Claude Desktop / 兼容 MCP 客户端配置示例：
@@ -85,7 +106,13 @@ Claude Desktop / 兼容 MCP 客户端配置示例：
 {
   "mcpServers": {
     "wq-forum-rag": {
-      "command": "wq-forum-rag-mcp",
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/absolute/path/wq-forum-rag",
+        "run",
+        "wq-forum-rag-mcp"
+      ],
       "env": {
         "WQ_FORUM_RAG_DB": "/absolute/path/.cache/forum.sqlite3"
       }
@@ -155,15 +182,15 @@ Claude Desktop / 兼容 MCP 客户端配置示例：
 对应 CLI 也提供了本地检查入口：
 
 ```bash
-wq-forum-rag evolve-context "alpha decay neutralization" --db .cache/forum.sqlite3 --top-k 3
-wq-forum-rag knowledge-search "neutralization" --db .cache/forum.sqlite3 --json
-wq-forum-rag knowledge-show alpha/neutralization-decay --db .cache/forum.sqlite3
-wq-forum-rag knowledge-lint --db .cache/forum.sqlite3
-wq-forum-rag knowledge-graph alpha/neutralization-decay --db .cache/forum.sqlite3 --depth 2
-wq-forum-rag knowledge-export --db .cache/forum.sqlite3 --out .cache/wiki
-wq-forum-rag search-reindex --db .cache/forum.sqlite3
-wq-forum-rag source-status ./notes --db .cache/forum.sqlite3
-wq-forum-rag source-ingest-plan ./notes --db .cache/forum.sqlite3 --commit
+uv run wq-forum-rag evolve-context "alpha decay neutralization" --db .cache/forum.sqlite3 --top-k 3
+uv run wq-forum-rag knowledge-search "neutralization" --db .cache/forum.sqlite3 --json
+uv run wq-forum-rag knowledge-show alpha/neutralization-decay --db .cache/forum.sqlite3
+uv run wq-forum-rag knowledge-lint --db .cache/forum.sqlite3
+uv run wq-forum-rag knowledge-graph alpha/neutralization-decay --db .cache/forum.sqlite3 --depth 2
+uv run wq-forum-rag knowledge-export --db .cache/forum.sqlite3 --out .cache/wiki
+uv run wq-forum-rag search-reindex --db .cache/forum.sqlite3
+uv run wq-forum-rag source-status ./notes --db .cache/forum.sqlite3
+uv run wq-forum-rag source-ingest-plan ./notes --db .cache/forum.sqlite3 --commit
 ```
 
 ## 精度 / 性能策略

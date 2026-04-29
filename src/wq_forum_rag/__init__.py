@@ -1,3 +1,8 @@
+# -*- coding: utf-8 -*-
+# Author: konrad
+# WQ_ID: OB53521
+# Encoding: utf-8
+
 """Offline lightweight RAG for WorldQuant forum exports."""
 
 from .cli import DEFAULT_DB_PATH, ForumIndexService, app
