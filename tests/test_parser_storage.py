@@ -123,16 +123,16 @@ def test_store_upsert_skips_unchanged_topics_and_rebuilds_changed_ones(
     db_path = tmp_path / "forum.sqlite3"
 
     with ForumStore(db_path) as store:
-        first = store.upsert_topics([topic], window_size=40, overlap=10)
+        first, first_seen = store.upsert_topics([topic], window_size=40, overlap=10)
         stored = store.get_topic(topic.id)
         initial_chunks = list(store.iter_chunks(topic.id))
-        second = store.upsert_topics([topic], window_size=40, overlap=10)
+        second, second_seen = store.upsert_topics([topic], window_size=40, overlap=10)
 
         updated_payload = topic.to_dict()
         updated_payload["body_text"] = "Updated body text for storage verification."
         updated_payload["content_hash"] = ""
         updated_topic = type(topic).from_dict(updated_payload)
-        third = store.upsert_topics([updated_topic], window_size=40, overlap=10)
+        third, third_seen = store.upsert_topics([updated_topic], window_size=40, overlap=10)
         updated_stored = store.get_topic(topic.id)
         updated_chunks = list(store.iter_chunks(topic.id))
 
@@ -143,6 +143,9 @@ def test_store_upsert_skips_unchanged_topics_and_rebuilds_changed_ones(
         "skipped": 0,
         "chunks_written": len(initial_chunks),
     }
+    assert first_seen == {topic.id}
+    assert second_seen == {topic.id}
+    assert third_seen == {topic.id}
     assert stored is not None
     assert stored.comments[0].content_text == "Read the docs."
     assert second["skipped"] == 1

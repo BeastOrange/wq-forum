@@ -38,11 +38,13 @@ class ForumStore:
         *,
         window_size: int = 1_500,
         overlap: int = 200,
-    ) -> dict[str, int]:
+    ) -> tuple[dict[str, int], set[str]]:
         stats = {"seen": 0, "inserted": 0, "updated": 0, "skipped": 0, "chunks_written": 0}
+        seen_ids: set[str] = set()
         with self.conn:
             for topic in topics:
                 stats["seen"] += 1
+                seen_ids.add(topic.id)
                 topic.content_hash = topic.compute_content_hash()
                 existing = self._get_topic_hash(topic.id)
                 if existing == topic.content_hash and self._has_chunks(topic.id):
@@ -99,7 +101,7 @@ class ForumStore:
                 """,
                 (str(stats["seen"]),),
             )
-        return stats
+        return stats, seen_ids
 
     def get_topic(self, topic_id: str) -> Topic | None:
         row = self.conn.execute(

@@ -10,4 +10,4 @@ __pycache__/
 dist/
 build/
 WQPCommunityState_*.json
-深度解析 LLM Wiki _ Obsidian-Wiki _ GBrain：Agent 时代知识的“自组织”与“自进化”.pdf
+*.pdf

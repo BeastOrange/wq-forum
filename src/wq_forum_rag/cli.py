@@ -14,6 +14,7 @@ from rich.console import Console
 from rich.table import Table
 
 from wq_forum_rag.evolution_cli import register_evolution_commands
+from wq_forum_rag.manifest import SourceManifestService
 from wq_forum_rag.source_cli import register_source_commands
 from wq_forum_rag.search_index import CachedEmbeddingBackend, fts_candidates, rebuild_search_index
 
@@ -36,7 +37,12 @@ class ForumIndexService:
         self.search_mod = _load_module("wq_forum_rag.search")
         self.storage = _load_module("wq_forum_rag.storage")
 
-    def index_from_json(self, json_path: str | Path, rebuild: bool = False) -> dict[str, Any]:
+    def index_from_json(
+        self,
+        json_path: str | Path,
+        rebuild: bool = False,
+        prune: bool = True,
+    ) -> dict[str, Any]:
         source = Path(json_path)
         stat = source.stat()
         fingerprint = {
@@ -52,7 +58,12 @@ class ForumIndexService:
             if rebuild:
                 store.conn.execute("DELETE FROM chunks")
                 store.conn.execute("DELETE FROM topics")
-            stats = store.upsert_topics(self.parser.iter_topics(source))
+            stats, seen_ids = store.upsert_topics(self.parser.iter_topics(source))
+            prune_summary = (
+                self._prune_orphans(store.conn, seen_ids)
+                if (prune and not rebuild)
+                else {"pruned": 0, "protected_orphans": []}
+            )
             with store.conn:
                 store.conn.executemany(
                     """
@@ -70,36 +81,80 @@ class ForumIndexService:
             "indexed_topics": total,
             "search_index": search_index,
             **stats,
+            **prune_summary,
         }
 
-    def search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
-        with self.storage.ForumStore(self.db_path) as store:
-            rows = [
-                dict(row)
-                for row in store.conn.execute(
-                    """
-                    SELECT
-                        c.chunk_id,
-                        c.topic_id,
-                        c.community_id,
-                        c.content,
-                        t.title,
-                        t.community_title,
-                        t.author,
-                        t.created_at,
-                        t.url,
-                        t.vote_num,
-                        t.comment_count
-                    FROM chunks AS c
-                    JOIN topics AS t ON t.topic_id = c.topic_id
-                    WHERE c.chunk_level = 1
-                    ORDER BY c.topic_id, c.chunk_level, c.chunk_index
-                    """
+    @staticmethod
+    def _prune_orphans(conn: Any, seen_ids: set[str]) -> dict[str, Any]:
+        db_topic_ids = {row[0] for row in conn.execute("SELECT topic_id FROM topics").fetchall()}
+        orphans = db_topic_ids - seen_ids
+        if not orphans:
+            return {"pruned": 0, "protected_orphans": []}
+        protected: set[str] = set()
+        if ForumIndexService._table_exists(conn, "knowledge_sources"):
+            protected = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT DISTINCT topic_id FROM knowledge_sources WHERE topic_id IS NOT NULL"
                 ).fetchall()
-            ]
-        candidates = set(fts_candidates(self.db_path, query, kind="forum_chunk"))
-        if candidates:
-            rows = [row for row in rows if row["chunk_id"] in candidates]
+            }
+        to_delete = sorted(orphans - protected)
+        protected_kept = sorted(orphans & protected)
+        if to_delete:
+            with conn:
+                for offset in range(0, len(to_delete), 500):
+                    batch = to_delete[offset : offset + 500]
+                    placeholders = ",".join("?" * len(batch))
+                    conn.execute(
+                        f"DELETE FROM topics WHERE topic_id IN ({placeholders})",
+                        tuple(batch),
+                    )
+        return {"pruned": len(to_delete), "protected_orphans": protected_kept}
+
+    @staticmethod
+    def _table_exists(conn: Any, name: str) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+            (name,),
+        ).fetchone()
+        return row is not None
+
+
+    def search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
+        candidates = list(set(fts_candidates(self.db_path, query, kind="forum_chunk")))
+        base_sql = """
+            SELECT
+                c.chunk_id,
+                c.topic_id,
+                c.community_id,
+                c.content,
+                t.title,
+                t.community_title,
+                t.author,
+                t.created_at,
+                t.url,
+                t.vote_num,
+                t.comment_count
+            FROM chunks AS c
+            JOIN topics AS t ON t.topic_id = c.topic_id
+            WHERE c.chunk_level = 1
+        """
+        order_clause = " ORDER BY c.topic_id, c.chunk_level, c.chunk_index"
+        with self.storage.ForumStore(self.db_path) as store:
+            if candidates:
+                placeholders = ",".join("?" * len(candidates))
+                rows = [
+                    dict(row)
+                    for row in store.conn.execute(
+                        base_sql + f" AND c.chunk_id IN ({placeholders})" + order_clause,
+                        tuple(candidates),
+                    ).fetchall()
+                ]
+            else:
+                rows = [
+                    dict(row)
+                    for row in store.conn.execute(base_sql + order_clause).fetchall()
+                ]
         topic_meta = {row["topic_id"]: row for row in rows}
         backend = CachedEmbeddingBackend(self.db_path)
         hits = self.search_mod.ForumSearcher(rows, embedding_backend=backend).search(
@@ -261,8 +316,36 @@ def index_command(
     json_path: Path = typer.Option(..., "--json", exists=True, dir_okay=False, readable=True),
     db_path: Path = typer.Option(DEFAULT_DB_PATH, "--db", dir_okay=False),
     rebuild: bool = typer.Option(False, "--rebuild", help="Force full rebuild"),
+    prune: bool = typer.Option(
+        True,
+        "--prune/--no-prune",
+        help="Delete topics present in DB but absent from new JSON (skipped on --rebuild)",
+    ),
 ) -> None:
-    console.print_json(data=ForumIndexService(db_path).index_from_json(json_path=json_path, rebuild=rebuild))
+    console.print_json(
+        data=ForumIndexService(db_path).index_from_json(
+            json_path=json_path, rebuild=rebuild, prune=prune
+        )
+    )
+
+
+@app.command("refresh")
+def refresh_command(
+    json_path: Path = typer.Argument(..., exists=True, dir_okay=False, readable=True),
+    db_path: Path = typer.Option(DEFAULT_DB_PATH, "--db", dir_okay=False),
+    rebuild: bool = typer.Option(False, "--rebuild", help="Force full rebuild"),
+    prune: bool = typer.Option(
+        True,
+        "--prune/--no-prune",
+        help="Delete topics present in DB but absent from new JSON (skipped on --rebuild)",
+    ),
+) -> None:
+    """Index forum JSON and commit source manifest in one step."""
+    index_result = ForumIndexService(db_path).index_from_json(
+        json_path=json_path, rebuild=rebuild, prune=prune
+    )
+    manifest_result = SourceManifestService(db_path).source_ingest_plan(json_path, commit=True)
+    console.print_json(data={"index": index_result, "manifest": manifest_result})
 
 
 @app.command("search")

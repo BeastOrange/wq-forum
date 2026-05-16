@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 from typer.testing import CliRunner
 
 from wq_forum_rag.cli import app
+from wq_forum_rag.knowledge import KnowledgeStore
 from wq_forum_rag.mcp_server import (
     find_by_exact,
     get_post,
@@ -58,6 +60,33 @@ def _write_fixture(json_path: Path) -> None:
                         "title": "Neutralization checklist",
                         "url": "https://example.com/t2",
                         "voteNum": 8,
+                    },
+                },
+            }
+        }
+    }
+    json_path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _write_fixture_only_t1(json_path: Path) -> None:
+    payload = {
+        "byCommunity": {
+            "c1": {
+                "id": "c1",
+                "title": "Alpha Lab",
+                "followers": 12,
+                "posts": 1,
+                "url": "https://example.com/community/c1",
+                "topics": {
+                    "t1": {
+                        "id": "t1",
+                        "author": "alice",
+                        "commentNum": 3,
+                        "datetime": "2026-04-28T13:00:00Z",
+                        "postContent": "<p>Alpha decay and neutralization notes.</p>",
+                        "title": "Alpha decay",
+                        "url": "https://example.com/t1",
+                        "voteNum": 10,
                     },
                 },
             }
@@ -124,3 +153,93 @@ def test_mcp_tool_contract_without_client(tmp_path: Path) -> None:
 
     reindex_payload = rebuild_search_index(db=str(db_path))
     assert reindex_payload["fts_available"] is True
+
+
+def test_refresh_command_prunes_orphans_and_commits_manifest(tmp_path: Path) -> None:
+    json_path = tmp_path / "forum.json"
+    db_path = tmp_path / "forum.sqlite3"
+    _write_fixture(json_path)
+    runner = CliRunner()
+
+    initial = runner.invoke(app, ["refresh", str(json_path), "--db", str(db_path), "--rebuild"])
+    assert initial.exit_code == 0
+    initial_payload = json.loads(initial.stdout)
+    assert initial_payload["index"]["indexed_topics"] == 2
+    assert initial_payload["manifest"]["committed"] is True
+
+    _write_fixture_only_t1(json_path)
+    refresh_result = runner.invoke(app, ["refresh", str(json_path), "--db", str(db_path)])
+    assert refresh_result.exit_code == 0
+    refresh_payload = json.loads(refresh_result.stdout)
+    assert refresh_payload["index"]["indexed_topics"] == 1
+    assert refresh_payload["index"]["pruned"] == 1
+    assert refresh_payload["index"]["protected_orphans"] == []
+
+    conn = sqlite3.connect(db_path)
+    try:
+        topic_ids = {row[0] for row in conn.execute("SELECT topic_id FROM topics").fetchall()}
+        chunk_topic_ids = {row[0] for row in conn.execute("SELECT DISTINCT topic_id FROM chunks").fetchall()}
+    finally:
+        conn.close()
+    assert topic_ids == {"t1"}
+    assert chunk_topic_ids == {"t1"}
+
+
+def test_index_no_prune_keeps_orphans(tmp_path: Path) -> None:
+    json_path = tmp_path / "forum.json"
+    db_path = tmp_path / "forum.sqlite3"
+    _write_fixture(json_path)
+    runner = CliRunner()
+    runner.invoke(app, ["index", "--json", str(json_path), "--db", str(db_path), "--rebuild"])
+
+    _write_fixture_only_t1(json_path)
+    result = runner.invoke(app, ["index", "--json", str(json_path), "--db", str(db_path), "--no-prune"])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["pruned"] == 0
+
+    conn = sqlite3.connect(db_path)
+    try:
+        topic_ids = {row[0] for row in conn.execute("SELECT topic_id FROM topics").fetchall()}
+    finally:
+        conn.close()
+    assert topic_ids == {"t1", "t2"}
+
+
+def test_index_prune_protects_topics_referenced_by_knowledge_pages(tmp_path: Path) -> None:
+    json_path = tmp_path / "forum.json"
+    db_path = tmp_path / "forum.sqlite3"
+    _write_fixture(json_path)
+    runner = CliRunner()
+    runner.invoke(app, ["index", "--json", str(json_path), "--db", str(db_path), "--rebuild"])
+
+    with KnowledgeStore(db_path) as kstore:
+        with kstore.conn:
+            kstore.conn.execute(
+                """
+                INSERT INTO knowledge_pages(slug, title, summary, body, status, confidence,
+                    content_hash, created_at, updated_at)
+                VALUES ('alpha-decay', 'Alpha Decay', 'summary', 'body', 'published', 0.9,
+                    'hash', '2026-04-28T13:00:00Z', '2026-04-28T13:00:00Z')
+                """
+            )
+            kstore.conn.execute(
+                """
+                INSERT INTO knowledge_sources(slug, topic_id, evidence_note)
+                VALUES ('alpha-decay', 't2', 'cited')
+                """
+            )
+
+    _write_fixture_only_t1(json_path)
+    result = runner.invoke(app, ["index", "--json", str(json_path), "--db", str(db_path)])
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["pruned"] == 0
+    assert payload["protected_orphans"] == ["t2"]
+
+    conn = sqlite3.connect(db_path)
+    try:
+        topic_ids = {row[0] for row in conn.execute("SELECT topic_id FROM topics").fetchall()}
+    finally:
+        conn.close()
+    assert topic_ids == {"t1", "t2"}
