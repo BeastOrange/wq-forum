@@ -11,3 +11,4 @@ dist/
 build/
 WQPCommunityState_*.json
 *.pdf
+.DS_Store

@@ -13,16 +13,19 @@
 
 ## 分享给别人时需要什么
 
-给会使用命令行和 MCP 的用户时，最小交付物是：
+仓库内有 **3 类数据**，分发方式不同：
 
-- 本项目源码
-- `pyproject.toml` / `uv.lock`
-- 论坛导出 JSON，或已经构建好的 `.cache/forum.sqlite3`
-- 可选：给 AI Agent 看的 [`README_AGENT.md`](README_AGENT.md)
+| 数据 | 体积 | 来源 | 是否在 repo 里 | 别人怎么拿到 |
+| --- | --- | --- | --- | --- |
+| 代码 / 测试 / `pyproject.toml` | 小 | 本仓库 | ✅ git | `git clone` |
+| **`Documents/` 官方文档(74 篇 .md)** | 468KB | 自己整理 | ✅ git | `git clone` 后跑 `ingest-docs` |
+| 论坛 SQLite (`.cache/forum.sqlite3`, ~438MB) | 大 | WQ 平台导出的 JSON 解析而来 | ❌ `.gitignore` | 由用户自己用自己的 WQ 帐号导 JSON 再 `refresh` |
 
-如果直接提供 SQLite 索引，对方可以跳过“离线索引”步骤，只需要把 MCP 配置里的 `WQ_FORUM_RAG_DB` 指到该文件。
+因此最小交付物 = **本仓库源码 + 用户自己的论坛 JSON**。`Documents/` 部分对所有 clone 用户都是开箱即用，不需要外部依赖。
 
-## 快速开始
+如果你愿意把已经构建好的 SQLite 私下分享(注意 WQ ToS 风险)，对方可以跳过"离线索引"步骤，只需要把 MCP 配置里的 `WQ_FORUM_RAG_DB` 指到该文件。
+
+## 快速开始(全新安装)
 
 ```bash
 git clone <repo-url>
@@ -43,6 +46,60 @@ uv sync
 ```bash
 uv sync --extra local-embeddings
 ```
+
+**入库官方文档**(必跑，否则 `search_docs` 返回空)：
+
+```bash
+uv run wq-forum-rag ingest-docs Documents
+```
+
+如果你还有自己的论坛 JSON，再入论坛：
+
+```bash
+uv run wq-forum-rag refresh /path/to/WQPCommunityState_YYYYMMDD_HHMMSS.json
+```
+
+至此 SQLite 内同时包含官方文档与论坛帖，MCP 工具全部可用。
+
+## 升级已有安装(老用户拉新代码)
+
+老用户的 MCP 已经配过，**升级只需要 3 步**(都是幂等的，多跑无害)：
+
+```bash
+# 1. 拉新代码
+cd /path/to/wq-forum-rag
+git pull
+
+# 2. 把官方文档增量入库
+#    - 新表 documents / doc_chunks 由 CREATE TABLE IF NOT EXISTS 懒创建
+#    - 已有 forum 数据完全不动
+#    - 同名文档按 content_hash 跳过，未改动的不会重复 embed
+uv run wq-forum-rag ingest-docs Documents
+
+# 3. 重启 MCP 客户端(Claude Desktop / Claude Code / Cursor 等)
+#    - MCP server 是常驻进程，启动时加载代码，不会热重载
+#    - 重启后新工具 search_docs / get_doc / ingest_docs 才会出现在工具列表里
+```
+
+**不需要做的事**：
+
+- ❌ `uv sync` —— 没新增依赖
+- ❌ `pip install -e .` —— 已经是 editable 安装，源码改动自动生效
+- ❌ 删 / 迁移 `forum.sqlite3` —— 老表完全兼容，新表 additive
+- ❌ 重跑 `refresh` —— 论坛部分零影响
+
+**校验升级成功的方法**：
+
+```bash
+# 应看到 indexed_documents=74, doc_chunks>=228
+uv run wq-forum-rag ingest-docs Documents
+
+# 重启 MCP 客户端后，在客户端里调一次：
+#   search_docs("neutralization")  → 应返回非空命中
+#   get_doc("operators")           → 应返回完整 markdown body
+```
+
+如果新工具仍然不可见，99% 是 MCP 客户端没重启，少数情况检查 `command` / `args` 路径有没有指错 repo。
 
 ## 离线索引
 
@@ -91,6 +148,33 @@ uv run wq-forum-rag search "alpha decay neutralization" --db .cache/forum.sqlite
 uv run wq-forum-rag show 12913566170391 --db .cache/forum.sqlite3
 ```
 
+## 官方文档库 (Documents/)
+
+`Documents/` 目录是从 BRAIN 平台整理的 74 篇官方文档(Operators / Neutralization / 各种 Dataset 用法等)，作为论坛之外的高信任度知识源，已直接 commit 进仓库，对所有 clone 用户开箱即用。
+
+入库 / 增量更新：
+
+```bash
+uv run wq-forum-rag ingest-docs Documents
+# 选项：
+#   --rebuild       强制全清重建
+#   --no-prune      保留 DB 中已不存在于目录的文档(默认 prune)
+```
+
+搜索与查看：
+
+```bash
+uv run wq-forum-rag search-docs "subindustry neutralization" --top-k 5
+uv run wq-forum-rag show-doc operators
+```
+
+设计上文档与论坛**完全隔离**：
+
+- 文档走 `documents` / `doc_chunks` 表，FTS kind = `doc_chunk`
+- 论坛走 `topics` / `chunks` 表，FTS kind = `forum_chunk`
+- MCP 端 `search_docs` 只命中文档，`search_forum` 只命中论坛
+- 两者共享同一个 SQLite 文件、同一个 embedding cache，互不污染
+
 ## MCP 用法
 
 服务端默认从 `WQ_FORUM_RAG_DB` 读取索引路径，也允许每次调用工具时显式传 `db`。
@@ -121,14 +205,28 @@ Claude Desktop / 兼容 MCP 客户端配置示例：
 }
 ```
 
-已暴露工具：
+已暴露工具(共 19 个)：
+
+论坛检索：
 
 - `search_forum(query, db=None, top_k=5)`
 - `get_post(topic_id, db=None)`
 - `find_by_exact(value, db=None, community=None, top_k=5)`
 - `related_posts(topic_id, db=None, top_k=5)`
+
+官方文档检索：
+
+- `search_docs(query, db=None, top_k=5)`
+- `get_doc(slug, db=None)`
+- `ingest_docs(directory, db=None, rebuild=False, prune=True)`
+
+来源管理：
+
 - `source_status(source, db=None)`
 - `source_ingest_plan(source, db=None, commit=False)`
+
+知识层(self-evolving)：
+
 - `build_evolution_context(query, db=None, top_k=5)`
 - `propose_knowledge_page(slug, title, summary, body, source_topic_ids, confidence, db=None, links=None, auto_publish=True)`
 - `search_knowledge(query, db=None, top_k=5, include_drafts=False)`
@@ -138,6 +236,9 @@ Claude Desktop / 兼容 MCP 客户端配置示例：
 - `publish_knowledge_page(slug, db=None)`
 - `graph_query(slug, db=None, depth=1, relation_type=None)`
 - `export_knowledge_wiki(db=None, output_dir=".cache/wiki", include_drafts=False)`
+
+维护：
+
 - `rebuild_search_index(db=None)`
 
 ## 自进化知识层

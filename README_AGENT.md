@@ -12,28 +12,67 @@ Use the MCP server as the source of truth for forum knowledge.
 
 ## Runtime Setup
 
-Assume the human user shares the project with `uv`. The normal setup is:
+Assume the human user shares the project with `uv`. The normal setup for a **new install** is:
 
 ```bash
 uv sync
 uv run wq-forum-rag --help
+uv run wq-forum-rag ingest-docs Documents   # ingest the 74 official BRAIN docs shipped in repo
 ```
 
 The system needs a SQLite index before search works. The user may provide either:
 
-- a forum export JSON, which should be indexed with `uv run wq-forum-rag index`;
+- a forum export JSON, which should be indexed with `uv run wq-forum-rag refresh`;
 - an existing `.cache/forum.sqlite3`, which can be used directly.
 
 If the user provides a JSON export, create or refresh the index with:
 
 ```bash
-uv run wq-forum-rag index \
-  --json WQPCommunityState_20260428_133740.json \
+uv run wq-forum-rag refresh \
+  /path/to/WQPCommunityState_YYYYMMDD_HHMMSS.json \
   --db .cache/forum.sqlite3 \
   --rebuild
 ```
 
 If the user provides an existing SQLite database, do not reindex unless asked. Point the MCP server to it with `WQ_FORUM_RAG_DB`.
+
+### Upgrading An Existing Install
+
+If the user already had a working MCP setup and just ran `git pull`, perform exactly these steps (all idempotent — safe to run twice):
+
+```bash
+# 1. Verify you are in the project root
+cd /absolute/path/to/wq-forum-rag
+
+# 2. Ingest the markdown docs shipped in repo.
+#    - New tables `documents` / `doc_chunks` are created lazily; existing
+#      forum tables are untouched.
+#    - Re-runs are skipped per content_hash, no wasted embedding.
+uv run wq-forum-rag ingest-docs Documents
+
+# 3. Ask the user to restart their MCP client (Claude Desktop / Claude Code / Cursor / etc).
+#    The MCP server is a long-lived process spawned at client startup; it
+#    does NOT hot-reload Python code. Without restart, the new tools
+#    search_docs / get_doc / ingest_docs will be invisible to you.
+```
+
+Do NOT attempt these on upgrade — they are not required and may waste time:
+
+- `uv sync` — no new dependencies were added.
+- Reinstall `pip install -e .` — installed package is already editable.
+- Delete or migrate `forum.sqlite3` — schema additions are backward compatible.
+- Re-run `refresh` on the forum JSON — forum data is untouched by this upgrade.
+
+To **verify** the upgrade succeeded, after the client restart, call:
+
+```text
+search_docs("neutralization")   # must return non-empty results
+get_doc("operators")            # must return a document with full body
+```
+
+If `search_docs` is not in your tool list at all, the client was not restarted, or it points at a different repo path. Tell the user explicitly rather than pretending the tool is unavailable.
+
+### MCP Client Configuration
 
 Compatible MCP clients can start the server with:
 
@@ -60,12 +99,21 @@ If you cannot see the MCP tools, first tell the user to check the MCP configurat
 
 ## Core Rule
 
-Always separate these two layers:
+The SQLite database contains **three independent layers**. Keep them straight:
 
-- Raw forum evidence: original topics, posts, chunks, URLs, titles, comments, and metadata.
-- Compiled knowledge: reusable knowledge pages created from forum evidence and linked back to source topic IDs.
+| Layer | Tables | MCP search tool | Trust | Origin |
+| --- | --- | --- | --- | --- |
+| Raw forum evidence | `topics` / `chunks` | `search_forum` | Medium (user discussion) | WQ platform JSON export |
+| Compiled knowledge | `knowledge_pages` / `knowledge_sources` / `knowledge_links` | `search_knowledge` | Medium (AI-distilled, must cite sources) | Produced by you via `propose_knowledge_page` |
+| Official docs | `documents` / `doc_chunks` | `search_docs` | High (authoritative reference) | Markdown files in `Documents/` committed to repo |
 
-When answering important questions, prefer compiled knowledge first, then verify or supplement with raw forum evidence.
+Routing rules:
+
+- For an **API / operator / dataset / parameter** definition, prefer `search_docs` first — it queries the BRAIN platform's official reference.
+- For **how others actually use a feature**, look in `search_forum` — that is community discussion.
+- For **reusable conclusions** you have already validated, look in `search_knowledge` — that is what you saved earlier with citations.
+
+When answering important questions, prefer compiled knowledge first, then verify with official docs and raw forum evidence. Never silently mix the three layers in one citation.
 
 ## First Tool To Use
 
@@ -88,9 +136,11 @@ Read `published_knowledge` first. Use `forum_evidence` for verification and miss
 Use these tools based on the user intent:
 
 - `build_evolution_context(query, top_k=3)`: default entry for research and reusable knowledge work.
+- `search_docs(query, top_k=5)`: search **official BRAIN platform docs** (operators, datasets, neutralization, universe, simulation settings, etc.). Try this first for any API / parameter / glossary question.
+- `get_doc(slug)`: fetch the full body of a single official doc once you have the slug.
 - `search_knowledge(query, top_k=5)`: search compiled knowledge pages before broad forum search.
-- `search_forum(query, top_k=5)`: broad forum search when compiled knowledge is missing or insufficient.
-- `find_by_exact(value, community=None, top_k=5)`: exact topic IDs, URLs, operator names, error messages, field names, and exact phrases.
+- `search_forum(query, top_k=5)`: broad forum search when official docs and compiled knowledge are missing or insufficient.
+- `find_by_exact(value, community=None, top_k=5)`: exact topic IDs, URLs, operator names, error messages, field names, and exact phrases on the forum.
 - `get_post(topic_id)`: retrieve full context for a cited or promising forum topic.
 - `related_posts(topic_id, top_k=5)`: expand from one useful topic to nearby topics.
 - `propose_knowledge_page(...)`: save reusable knowledge with source topic IDs.
@@ -99,6 +149,7 @@ Use these tools based on the user intent:
 - `link_knowledge_pages(source_slug, target_slug, relation_type, ...)`: add graph relations between knowledge pages.
 - `graph_query(slug, depth=1, relation_type=None)`: inspect related knowledge and backlinks.
 - `export_knowledge_wiki(output_dir=".cache/wiki")`: export Markdown pages for human review.
+- `ingest_docs(directory, rebuild=False, prune=True)`: re-ingest the `Documents/` markdown directory after the user adds or updates `.md` files. Idempotent — unchanged files are skipped per content hash.
 - `source_status(source)`: dry-run scan for an external text or Markdown source directory.
 - `source_ingest_plan(source, commit=False)`: inspect or commit a text/Markdown source manifest delta.
 - `rebuild_search_index()`: refresh FTS after bulk indexing or many knowledge-page changes.
@@ -107,13 +158,14 @@ Use these tools based on the user intent:
 
 Follow this workflow for most questions:
 
-1. Call `build_evolution_context(query, top_k=3)`.
-2. Read published knowledge and raw forum evidence.
-3. If evidence is enough, answer the user with clear caveats and cite topic IDs or source titles when useful.
-4. If the answer relies on a topic ID, call `get_post(topic_id)` before making detailed claims.
-5. If compiled knowledge is missing but the evidence contains reusable guidance, create a knowledge page.
-6. Run `lint_knowledge(slug=...)` after creating or updating a knowledge page.
-7. If several pages are connected, use `link_knowledge_pages` and optionally `graph_query`.
+1. If the question is about a specific operator / dataset / parameter / glossary term, call `search_docs(query, top_k=3)` first — official docs are authoritative.
+2. Otherwise (or in addition), call `build_evolution_context(query, top_k=3)` for compiled knowledge plus raw forum evidence.
+3. Read official docs first, then published knowledge, then raw forum evidence. Cite the layer you used.
+4. If evidence is enough, answer the user with clear caveats and cite doc slugs, knowledge slugs, or forum topic IDs.
+5. If the answer relies on a topic ID, call `get_post(topic_id)` before making detailed claims.
+6. If compiled knowledge is missing but the evidence contains reusable guidance, create a knowledge page.
+7. Run `lint_knowledge(slug=...)` after creating or updating a knowledge page.
+8. If several pages are connected, use `link_knowledge_pages` and optionally `graph_query`.
 
 Do not invent forum facts. If the tools do not return enough evidence, say that the local knowledge base does not contain enough support.
 
