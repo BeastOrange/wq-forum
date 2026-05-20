@@ -68,8 +68,14 @@ def fts_candidates(
 
 def _rebuild_with_conn(conn: sqlite3.Connection) -> dict[str, Any]:
     if not init_search_schema(conn):
-        return {"fts_available": False, "forum_docs": 0, "knowledge_docs": 0, "indexed_documents": 0}
-    rows = _forum_rows(conn) + _knowledge_rows(conn)
+        return {
+            "fts_available": False,
+            "forum_docs": 0,
+            "knowledge_docs": 0,
+            "doc_chunks": 0,
+            "indexed_documents": 0,
+        }
+    rows = _forum_rows(conn) + _knowledge_rows(conn) + _doc_rows(conn)
     conn.execute("DELETE FROM document_fts")
     conn.executemany(
         """
@@ -80,10 +86,12 @@ def _rebuild_with_conn(conn: sqlite3.Connection) -> dict[str, Any]:
     )
     forum_docs = sum(1 for row in rows if row[0] == "forum_chunk")
     knowledge_docs = sum(1 for row in rows if row[0] == "knowledge_page")
+    doc_chunks = sum(1 for row in rows if row[0] == "doc_chunk")
     return {
         "fts_available": True,
         "forum_docs": forum_docs,
         "knowledge_docs": knowledge_docs,
+        "doc_chunks": doc_chunks,
         "indexed_documents": len(rows),
     }
 
@@ -119,6 +127,8 @@ def _query_fts(conn: sqlite3.Connection, kind: str, match_query: str, limit: int
 
 
 def _forum_rows(conn: sqlite3.Connection) -> list[tuple[str, str, str, str, str, str]]:
+    if not _table_exists(conn, "chunks") or not _table_exists(conn, "topics"):
+        return []
     rows = conn.execute(
         """
         SELECT c.chunk_id, c.topic_id, c.content, t.title, t.community_title
@@ -139,6 +149,23 @@ def _knowledge_rows(conn: sqlite3.Connection) -> list[tuple[str, str, str, str, 
     rows = conn.execute("SELECT slug, title, summary, body, status FROM knowledge_pages").fetchall()
     return [
         ("knowledge_page", row["slug"], row["slug"], row["title"], row["status"], f"{row['summary']}\n{row['body']}")
+        for row in rows
+    ]
+
+
+def _doc_rows(conn: sqlite3.Connection) -> list[tuple[str, str, str, str, str, str]]:
+    if not _table_exists(conn, "doc_chunks") or not _table_exists(conn, "documents"):
+        return []
+    rows = conn.execute(
+        """
+        SELECT c.chunk_id, c.slug, c.content, d.title
+        FROM doc_chunks AS c
+        JOIN documents AS d ON d.slug = c.slug
+        ORDER BY c.slug, c.chunk_index
+        """
+    ).fetchall()
+    return [
+        ("doc_chunk", row["chunk_id"], row["slug"], row["title"], "docs", row["content"])
         for row in rows
     ]
 

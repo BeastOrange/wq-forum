@@ -77,6 +77,55 @@ def search_knowledge_records(
     return _knowledge_results(hits, pages, _knowledge_link_counts(conn), top_k)
 
 
+def search_doc_records(
+    conn: sqlite3.Connection,
+    query: str,
+    *,
+    top_k: int = 5,
+    embedding_backend: EmbeddingBackend | None = None,
+) -> list[dict[str, Any]]:
+    rows = _doc_candidate_rows(conn, query, top_k=max(top_k * 20, 80)) or _doc_detail_rows(conn)
+    if not rows or top_k <= 0:
+        return []
+
+    chunks = [
+        {
+            "topic_id": row["slug"],
+            "chunk_id": row["chunk_id"],
+            "community": "docs",
+            "title": row["title"],
+            "content": row["content"],
+        }
+        for row in rows
+    ]
+    hits = ForumSearcher(
+        chunks,
+        embedding_backend=_backend(conn, embedding_backend),
+        dense_weight=0.55,
+        lexical_weight=0.45,
+    ).search(query=query, top_k=max(top_k * 3, top_k))
+    meta = {row["slug"]: row for row in rows}
+    results: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for hit in hits:
+        if hit.topic_id in seen:
+            continue
+        seen.add(hit.topic_id)
+        row = meta[hit.topic_id]
+        results.append(
+            {
+                "slug": row["slug"],
+                "title": row["title"],
+                "source_path": row["source_path"],
+                "snippet": hit.snippet,
+                "score": hit.score,
+            }
+        )
+        if len(results) >= top_k:
+            break
+    return results
+
+
 def _backend(conn: sqlite3.Connection, embedding_backend: EmbeddingBackend | None):
     db_path = _db_path(conn)
     if db_path:
@@ -158,6 +207,46 @@ def _knowledge_candidate_rows(conn: sqlite3.Connection, query: str, *, top_k: in
         """,
         (match_query, int(include_drafts), top_k),
     ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _doc_detail_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    from wq_forum_rag.search_index import _table_exists
+
+    if not _table_exists(conn, "doc_chunks") or not _table_exists(conn, "documents"):
+        return []
+    rows = conn.execute(
+        """
+        SELECT c.chunk_id, c.slug, c.content, d.title, d.source_path
+        FROM doc_chunks AS c
+        JOIN documents AS d ON d.slug = c.slug
+        ORDER BY c.slug, c.chunk_index
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _doc_candidate_rows(conn: sqlite3.Connection, query: str, *, top_k: int) -> list[dict[str, Any]]:
+    from wq_forum_rag.search_index import _fts_query, _table_exists
+
+    match_query = _fts_query(query)
+    if not match_query or not _table_exists(conn, "document_fts") or not _table_exists(conn, "doc_chunks"):
+        return []
+    try:
+        rows = conn.execute(
+            """
+            SELECT c.chunk_id, c.slug, c.content, d.title, d.source_path
+            FROM document_fts
+            JOIN doc_chunks AS c ON c.chunk_id = document_fts.record_id
+            JOIN documents AS d ON d.slug = c.slug
+            WHERE kind = 'doc_chunk' AND document_fts MATCH ?
+            ORDER BY rank
+            LIMIT ?
+            """,
+            (match_query, top_k),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return []
     return [dict(row) for row in rows]
 
 

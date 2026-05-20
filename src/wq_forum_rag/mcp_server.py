@@ -10,12 +10,14 @@ from pathlib import Path
 from typing import Any
 
 from .cli import DEFAULT_DB_PATH, ForumIndexService
+from .documents import DocumentStore, ingest_documents
 from .evolution import EvolutionService
 from .manifest import SourceManifestService
 from .search_index import (
     rebuild_search_index as rebuild_search_index_impl,
     search_knowledge_records,
 )
+from .search_records import search_doc_records
 from .storage import ForumStore
 
 try:
@@ -194,6 +196,29 @@ def rebuild_search_index(db: str | None = None) -> dict[str, Any]:
     return {"db": str(_resolve_db_path(db)), **result}
 
 
+def search_docs(query: str, db: str | None = None, top_k: int = 5) -> dict[str, Any]:
+    with ForumStore(_resolve_db_path(db)) as store:
+        results = search_doc_records(store.conn, query=query, top_k=top_k)
+    return {"query": query, "db": str(_resolve_db_path(db)), "results": results}
+
+
+def get_doc(slug: str, db: str | None = None) -> dict[str, Any]:
+    with DocumentStore(_resolve_db_path(db)) as store:
+        document = store.get_document(slug)
+    return {"slug": slug, "db": str(_resolve_db_path(db)), "document": document}
+
+
+def ingest_docs(
+    directory: str,
+    db: str | None = None,
+    rebuild: bool = False,
+    prune: bool = True,
+) -> dict[str, Any]:
+    result = ingest_documents(directory, _resolve_db_path(db), rebuild=rebuild, prune=prune)
+    search_index = rebuild_search_index_impl(_resolve_db_path(db))
+    return {**result, "search_index": search_index}
+
+
 def build_mcp_server(default_db: str | Path | None = None) -> FastMCP:
     if default_db:
         os.environ.setdefault("WQ_FORUM_RAG_DB", str(default_db))
@@ -214,6 +239,9 @@ def build_mcp_server(default_db: str | Path | None = None) -> FastMCP:
     server.tool()(graph_query)
     server.tool()(export_knowledge_wiki)
     server.tool()(rebuild_search_index)
+    server.tool()(search_docs)
+    server.tool()(get_doc)
+    server.tool()(ingest_docs)
     return server
 
 
