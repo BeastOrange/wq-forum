@@ -10,8 +10,6 @@ from pathlib import Path
 from typing import Any
 
 from wq_forum_rag.search import tokenize_text
-from wq_forum_rag.search_cache import CachedEmbeddingBackend, embedding_cache_count
-from wq_forum_rag.search_records import search_forum_records, search_knowledge_records
 
 
 def init_search_schema(conn: sqlite3.Connection) -> bool:

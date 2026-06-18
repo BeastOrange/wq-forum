@@ -51,6 +51,11 @@ def normalize_slug(value: str) -> str:
     slug = (value or "").strip().lower().replace(" ", "-")
     if not SLUG_PATTERN.fullmatch(slug):
         raise ValueError("slug must match [a-z0-9][a-z0-9._/-]{1,120}")
+    parts = slug.split("/")
+    if any(part in {"", "."} for part in parts):
+        raise ValueError("slug must not contain empty or current-directory segments")
+    if any(part == ".." for part in parts):
+        raise ValueError("slug must not contain path traversal")
     return slug
 
 

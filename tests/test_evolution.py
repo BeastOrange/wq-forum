@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from wq_forum_rag.cli import app
@@ -21,6 +22,7 @@ from wq_forum_rag.mcp_server import (
     search_knowledge,
 )
 from wq_forum_rag.evolution import EvolutionService
+from wq_forum_rag.knowledge import normalize_slug
 
 
 def _write_fixture(json_path: Path) -> None:
@@ -233,3 +235,11 @@ def test_graph_query_and_wiki_export(tmp_path: Path) -> None:
     )
     assert cli_export.exit_code == 0
     assert "index.md" in cli_export.stdout
+
+
+def test_normalize_slug_rejects_path_traversal_segments() -> None:
+    with pytest.raises(ValueError, match="slug must not contain path traversal"):
+        normalize_slug("alpha/../../escape")
+
+    with pytest.raises(ValueError, match="slug must not contain empty or current-directory segments"):
+        normalize_slug("alpha//bad")
