@@ -22,6 +22,12 @@ SOURCE_DIR_ENV = "WQ_FORUM_RAG_SOURCE_DIR"
 DISABLED_VALUES = {"0", "false", "no", "off"}
 
 
+class ForumDatabaseBusyError(RuntimeError):
+    def __init__(self, payload: dict[str, Any]) -> None:
+        self.payload = payload
+        super().__init__(str(payload.get("reason") or "database is locked"))
+
+
 def _load_module(name: str) -> Any:
     try:
         return importlib.import_module(name)
@@ -101,32 +107,35 @@ class ForumIndexService:
                 commit=True,
             )
         except sqlite3.OperationalError as exc:
-            if "locked" in str(exc).lower():
-                return {
-                    "status": "locked",
-                    "db": str(self.db_path),
-                    "json": str(latest),
-                    "reason": str(exc),
-                }
+            if is_database_locked(exc):
+                return database_locked_status(self.db_path, json_path=latest, reason=str(exc))
             raise
         return {"status": "refreshed", "index": index_result, "manifest": manifest_result}
 
     def search(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
-        self.auto_refresh_if_needed()
-        candidates = list(set(fts_candidates(self.db_path, query, kind="forum_chunk")))
-        rows = self._search_rows(candidates)
-        topic_meta = {row["topic_id"]: row for row in rows}
-        backend = CachedEmbeddingBackend(self.db_path)
-        hits = self.search_mod.ForumSearcher(rows, embedding_backend=backend).search(
-            query=query,
-            top_k=max(top_k * 3, top_k),
-        )
-        return self._format_hits(hits, topic_meta, top_k)
+        self._ensure_readable()
+        try:
+            candidates = list(set(fts_candidates(self.db_path, query, kind="forum_chunk")))
+            rows = self._search_rows(candidates)
+            topic_meta = {row["topic_id"]: row for row in rows}
+            backend = CachedEmbeddingBackend(self.db_path)
+            hits = self.search_mod.ForumSearcher(rows, embedding_backend=backend).search(
+                query=query,
+                top_k=max(top_k * 3, top_k),
+            )
+            return self._format_hits(hits, topic_meta, top_k)
+        except sqlite3.OperationalError as exc:
+            self._raise_if_locked(exc)
+            raise
 
     def get_post(self, topic_id: str) -> dict[str, Any] | None:
-        self.auto_refresh_if_needed()
-        with self.storage.ForumStore(self.db_path) as store:
-            topic = store.get_topic(topic_id)
+        self._ensure_readable()
+        try:
+            with self.storage.ForumStore(self.db_path) as store:
+                topic = store.get_topic(topic_id)
+        except sqlite3.OperationalError as exc:
+            self._raise_if_locked(exc)
+            raise
         if topic is None:
             return None
         payload = topic.to_dict()
@@ -140,15 +149,19 @@ class ForumIndexService:
         community: str | None = None,
         top_k: int = 5,
     ) -> list[dict[str, Any]]:
-        self.auto_refresh_if_needed()
+        self._ensure_readable()
         normalized = value.strip()
         if not normalized:
             return []
-        rows = self._exact_rows(normalized, community=community, top_k=top_k)
+        try:
+            rows = self._exact_rows(normalized, community=community, top_k=top_k)
+        except sqlite3.OperationalError as exc:
+            self._raise_if_locked(exc)
+            raise
         return [self._format_exact_row(row, normalized) for row in rows]
 
     def related_posts(self, topic_id: str, top_k: int = 5) -> list[dict[str, Any]]:
-        self.auto_refresh_if_needed()
+        self._ensure_readable()
         base = self.get_post(topic_id)
         if not base:
             return []
@@ -158,6 +171,15 @@ class ForumIndexService:
         ]
         same = [item for item in ranked if item["community_id"] == base["community_id"]]
         return (same + [item for item in ranked if item["community_id"] != base["community_id"]])[:top_k]
+
+    def _ensure_readable(self) -> None:
+        refresh = self.auto_refresh_if_needed()
+        if refresh.get("status") == "locked":
+            raise ForumDatabaseBusyError(refresh)
+
+    def _raise_if_locked(self, exc: sqlite3.OperationalError) -> None:
+        if is_database_locked(exc):
+            raise ForumDatabaseBusyError(database_locked_status(self.db_path, reason=str(exc))) from exc
 
     def _needs_refresh(self, source: Path) -> bool:
         if not self.db_path.exists():
@@ -412,3 +434,19 @@ def _dedupe_paths(paths: list[Path]) -> list[Path]:
 def _auto_refresh_enabled() -> bool:
     value = os.environ.get(AUTO_REFRESH_ENV, "1").strip().lower()
     return value not in DISABLED_VALUES
+
+
+def is_database_locked(exc: sqlite3.OperationalError) -> bool:
+    return "locked" in str(exc).lower()
+
+
+def database_locked_status(
+    db_path: str | Path,
+    *,
+    json_path: str | Path | None = None,
+    reason: str = "database is locked",
+) -> dict[str, Any]:
+    payload = {"status": "locked", "db": str(db_path), "reason": reason}
+    if json_path is not None:
+        payload["json"] = str(json_path)
+    return payload

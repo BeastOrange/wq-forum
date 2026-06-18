@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from wq_forum_rag.indexer import ForumIndexService
+from wq_forum_rag.indexer import ForumDatabaseBusyError, ForumIndexService
 from wq_forum_rag.knowledge import DRAFT, PUBLISHED, KnowledgePage, KnowledgeStore
 from wq_forum_rag.search_records import search_forum_records, search_knowledge_records
 from wq_forum_rag.storage import ForumStore
@@ -48,6 +48,7 @@ class EvolutionService:
         links: list[dict[str, Any]] | None = None,
         auto_publish: bool = True,
     ) -> dict[str, Any]:
+        self._ensure_forum_fresh()
         page = KnowledgePage(
             slug=slug,
             title=title,
@@ -170,7 +171,9 @@ class EvolutionService:
         return WikiService(self.db_path).export_wiki(output_dir, include_drafts=include_drafts)
 
     def _ensure_forum_fresh(self) -> None:
-        ForumIndexService(self.db_path).auto_refresh_if_needed()
+        refresh = ForumIndexService(self.db_path).auto_refresh_if_needed()
+        if refresh.get("status") == "locked":
+            raise ForumDatabaseBusyError(refresh)
 
     def _lint_page_payload(
         self,

@@ -58,6 +58,49 @@ def _write_fixture(json_path: Path) -> None:
     json_path.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _write_fixture_with_t3(json_path: Path) -> None:
+    payload = {
+        "byCommunity": {
+            "c1": {
+                "title": "Alpha Lab",
+                "topics": {
+                    "t1": {
+                        "id": "t1",
+                        "author": "alice",
+                        "commentNum": 0,
+                        "datetime": "2026-04-28T13:00:00Z",
+                        "postContent": "<p>Alpha decay should be tested with neutralization settings.</p>",
+                        "title": "Alpha decay neutralization",
+                        "url": "https://example.com/t1",
+                        "voteNum": 10,
+                    },
+                    "t2": {
+                        "id": "t2",
+                        "author": "bob",
+                        "commentNum": 0,
+                        "datetime": "2026-04-28T13:10:00Z",
+                        "postContent": "<p>Subindustry neutralization can reduce sector exposure.</p>",
+                        "title": "Subindustry neutralization",
+                        "url": "https://example.com/t2",
+                        "voteNum": 8,
+                    },
+                    "t3": {
+                        "id": "t3",
+                        "author": "carol",
+                        "commentNum": 0,
+                        "datetime": "2026-04-28T13:20:00Z",
+                        "postContent": "<p>Turnover control should be evaluated with new decay evidence.</p>",
+                        "title": "Turnover and decay",
+                        "url": "https://example.com/t3",
+                        "voteNum": 6,
+                    },
+                },
+            }
+        }
+    }
+    json_path.write_text(json.dumps(payload), encoding="utf-8")
+
+
 def _index_fixture(tmp_path: Path) -> Path:
     json_path = tmp_path / "forum.json"
     db_path = tmp_path / "forum.sqlite3"
@@ -235,6 +278,39 @@ def test_graph_query_and_wiki_export(tmp_path: Path) -> None:
     )
     assert cli_export.exit_code == 0
     assert "index.md" in cli_export.stdout
+
+
+def test_propose_knowledge_page_auto_refreshes_before_topic_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    json_path = tmp_path / "WQPCommunityState_20260618_142702.json"
+    db_path = tmp_path / "forum.sqlite3"
+    _write_fixture(json_path)
+    result = CliRunner().invoke(
+        app,
+        ["refresh", str(json_path), "--db", str(db_path), "--rebuild"],
+    )
+    assert result.exit_code == 0
+
+    _write_fixture_with_t3(json_path)
+    monkeypatch.setenv("WQ_FORUM_RAG_SOURCE", str(json_path))
+
+    proposed = propose_knowledge_page(
+        slug="alpha/turnover-decay",
+        title="Turnover and decay",
+        summary="New turnover evidence should be accepted after the auto-refresh picks up topic t3.",
+        body=(
+            "The knowledge proposal should validate t3 after auto-refresh without requiring a prior "
+            "forum search call."
+        ),
+        source_topic_ids=["t3"],
+        confidence=0.9,
+        db=str(db_path),
+    )
+
+    assert proposed["page"]["slug"] == "alpha/turnover-decay"
+    assert {item["topic_id"] for item in proposed["page"]["sources"]} == {"t3"}
 
 
 def test_normalize_slug_rejects_path_traversal_segments() -> None:

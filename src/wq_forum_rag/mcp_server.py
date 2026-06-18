@@ -12,6 +12,7 @@ from typing import Any
 from .cli import DEFAULT_DB_PATH, ForumIndexService
 from .documents import DocumentStore, ingest_documents
 from .evolution import EvolutionService
+from .indexer import ForumDatabaseBusyError
 from .manifest import SourceManifestService
 from .search_index import rebuild_search_index as rebuild_search_index_impl
 from .search_records import search_doc_records, search_knowledge_records
@@ -40,14 +41,26 @@ def _resolve_db_path(db: str | None) -> Path:
     return Path(db or os.environ.get("WQ_FORUM_RAG_DB") or DEFAULT_DB_PATH)
 
 
+def _busy_payload(exc: ForumDatabaseBusyError, **extra: Any) -> dict[str, Any]:
+    return {**extra, **exc.payload}
+
+
 def search_forum(query: str, db: str | None = None, top_k: int = 5) -> dict[str, Any]:
-    results = ForumIndexService(_resolve_db_path(db)).search(query=query, top_k=top_k)
-    return {"query": query, "db": str(_resolve_db_path(db)), "results": results}
+    db_path = _resolve_db_path(db)
+    try:
+        results = ForumIndexService(db_path).search(query=query, top_k=top_k)
+    except ForumDatabaseBusyError as exc:
+        return _busy_payload(exc, query=query, results=[])
+    return {"query": query, "db": str(db_path), "results": results}
 
 
 def get_post(topic_id: str, db: str | None = None) -> dict[str, Any]:
-    post = ForumIndexService(_resolve_db_path(db)).get_post(topic_id)
-    return {"topic_id": topic_id, "db": str(_resolve_db_path(db)), "post": post}
+    db_path = _resolve_db_path(db)
+    try:
+        post = ForumIndexService(db_path).get_post(topic_id)
+    except ForumDatabaseBusyError as exc:
+        return _busy_payload(exc, topic_id=topic_id, post=None)
+    return {"topic_id": topic_id, "db": str(db_path), "post": post}
 
 
 def find_by_exact(
@@ -56,17 +69,25 @@ def find_by_exact(
     community: str | None = None,
     top_k: int = 5,
 ) -> dict[str, Any]:
-    results = ForumIndexService(_resolve_db_path(db)).find_by_exact(
-        value,
-        community=community,
-        top_k=top_k,
-    )
-    return {"value": value, "db": str(_resolve_db_path(db)), "results": results}
+    db_path = _resolve_db_path(db)
+    try:
+        results = ForumIndexService(db_path).find_by_exact(
+            value,
+            community=community,
+            top_k=top_k,
+        )
+    except ForumDatabaseBusyError as exc:
+        return _busy_payload(exc, value=value, results=[])
+    return {"value": value, "db": str(db_path), "results": results}
 
 
 def related_posts(topic_id: str, db: str | None = None, top_k: int = 5) -> dict[str, Any]:
-    posts = ForumIndexService(_resolve_db_path(db)).related_posts(topic_id=topic_id, top_k=top_k)
-    return {"topic_id": topic_id, "db": str(_resolve_db_path(db)), "results": posts}
+    db_path = _resolve_db_path(db)
+    try:
+        posts = ForumIndexService(db_path).related_posts(topic_id=topic_id, top_k=top_k)
+    except ForumDatabaseBusyError as exc:
+        return _busy_payload(exc, topic_id=topic_id, results=[])
+    return {"topic_id": topic_id, "db": str(db_path), "results": posts}
 
 
 def source_status(source: str, db: str | None = None) -> dict[str, Any]:
@@ -82,11 +103,15 @@ def source_ingest_plan(
 
 
 def build_evolution_context(query: str, db: str | None = None, top_k: int = 5) -> dict[str, Any]:
-    context = EvolutionService(_resolve_db_path(db)).build_evolution_context(
-        query=query,
-        top_k=top_k,
-    )
-    return {"query": query, "db": str(_resolve_db_path(db)), **context}
+    db_path = _resolve_db_path(db)
+    try:
+        context = EvolutionService(db_path).build_evolution_context(
+            query=query,
+            top_k=top_k,
+        )
+    except ForumDatabaseBusyError as exc:
+        return _busy_payload(exc, query=query, published_knowledge=[], forum_evidence=[])
+    return {"query": query, "db": str(db_path), **context}
 
 
 def propose_knowledge_page(
@@ -100,17 +125,21 @@ def propose_knowledge_page(
     links: list[dict[str, Any]] | None = None,
     auto_publish: bool = True,
 ) -> dict[str, Any]:
-    result = EvolutionService(_resolve_db_path(db)).propose_knowledge_page(
-        slug=slug,
-        title=title,
-        summary=summary,
-        body=body,
-        source_topic_ids=source_topic_ids,
-        confidence=confidence,
-        links=links,
-        auto_publish=auto_publish,
-    )
-    return {"db": str(_resolve_db_path(db)), **result}
+    db_path = _resolve_db_path(db)
+    try:
+        result = EvolutionService(db_path).propose_knowledge_page(
+            slug=slug,
+            title=title,
+            summary=summary,
+            body=body,
+            source_topic_ids=source_topic_ids,
+            confidence=confidence,
+            links=links,
+            auto_publish=auto_publish,
+        )
+    except ForumDatabaseBusyError as exc:
+        return _busy_payload(exc, page=None, issues=[], auto_published=False)
+    return {"db": str(db_path), **result}
 
 
 def search_knowledge(
