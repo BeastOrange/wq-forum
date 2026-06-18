@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from wq_forum_rag.manifest import SourceManifestService
-from wq_forum_rag.search_index import CachedEmbeddingBackend, fts_candidates, rebuild_search_index
+from wq_forum_rag.search_cache import CachedEmbeddingBackend
+from wq_forum_rag.search_index import fts_candidates, rebuild_search_index
 
 EXPORT_PATTERN = "WQPCommunityState_*.json"
 AUTO_REFRESH_ENV = "WQ_FORUM_RAG_AUTO_REFRESH"

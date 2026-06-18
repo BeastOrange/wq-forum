@@ -10,7 +10,7 @@ from typing import Any
 
 from wq_forum_rag.indexer import ForumIndexService
 from wq_forum_rag.knowledge import DRAFT, PUBLISHED, KnowledgePage, KnowledgeStore
-from wq_forum_rag.search_index import search_forum_records, search_knowledge_records
+from wq_forum_rag.search_records import search_forum_records, search_knowledge_records
 from wq_forum_rag.storage import ForumStore
 from wq_forum_rag.wiki import WikiService
 

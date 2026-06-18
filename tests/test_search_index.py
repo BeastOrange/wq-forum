@@ -13,12 +13,9 @@ from typer.testing import CliRunner
 
 from wq_forum_rag.cli import app
 from wq_forum_rag.evolution import EvolutionService
-from wq_forum_rag.search_index import (
-    embedding_cache_count,
-    fts_candidates,
-    rebuild_search_index,
-    search_forum_records,
-)
+from wq_forum_rag.search_cache import embedding_cache_count
+from wq_forum_rag.search_index import fts_candidates, rebuild_search_index
+from wq_forum_rag.search_records import search_forum_records
 from wq_forum_rag.storage import ForumStore
 
 

@@ -13,11 +13,8 @@ from .cli import DEFAULT_DB_PATH, ForumIndexService
 from .documents import DocumentStore, ingest_documents
 from .evolution import EvolutionService
 from .manifest import SourceManifestService
-from .search_index import (
-    rebuild_search_index as rebuild_search_index_impl,
-    search_knowledge_records,
-)
-from .search_records import search_doc_records
+from .search_index import rebuild_search_index as rebuild_search_index_impl
+from .search_records import search_doc_records, search_knowledge_records
 from .storage import ForumStore
 
 try:
