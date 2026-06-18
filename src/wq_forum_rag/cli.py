@@ -8,13 +8,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import sqlite3
 import typer
 from rich.console import Console
 from rich.table import Table
 
 from wq_forum_rag.documents import ingest_documents as ingest_documents_impl, DocumentStore
 from wq_forum_rag.evolution_cli import register_evolution_commands
-from wq_forum_rag.indexer import ForumIndexService
+from wq_forum_rag.indexer import ForumDatabaseBusyError, ForumIndexService, raise_if_database_locked
 from wq_forum_rag.manifest import SourceManifestService
 from wq_forum_rag.source_cli import register_source_commands
 from wq_forum_rag.search_index import rebuild_search_index
@@ -23,6 +24,11 @@ from wq_forum_rag.search_records import search_doc_records
 DEFAULT_DB_PATH = Path(".cache/forum.sqlite3")
 app = typer.Typer(no_args_is_help=True, help="Offline lightweight RAG for WQ forum exports")
 console = Console()
+
+
+def _print_busy(exc: ForumDatabaseBusyError, **extra: Any) -> None:
+    console.print_json(data={**extra, **exc.payload})
+
 
 def _render_search(results: list[dict[str, Any]]) -> None:
     table = Table(title=f"Top {len(results)}")
@@ -76,7 +82,10 @@ def search_command(
     db_path: Path = typer.Option(DEFAULT_DB_PATH, "--db", exists=True, dir_okay=False, readable=True),
     top_k: int = typer.Option(5, "--top-k", min=1, max=20),
 ) -> None:
-    _render_search(ForumIndexService(db_path).search(query=query, top_k=top_k))
+    try:
+        _render_search(ForumIndexService(db_path).search(query=query, top_k=top_k))
+    except ForumDatabaseBusyError as exc:
+        _print_busy(exc, query=query, results=[])
 
 
 @app.command("show")
@@ -84,7 +93,11 @@ def show_command(
     topic_id: str = typer.Argument(..., help="Forum topic id"),
     db_path: Path = typer.Option(DEFAULT_DB_PATH, "--db", exists=True, dir_okay=False, readable=True),
 ) -> None:
-    post = ForumIndexService(db_path).get_post(topic_id)
+    try:
+        post = ForumIndexService(db_path).get_post(topic_id)
+    except ForumDatabaseBusyError as exc:
+        _print_busy(exc, topic_id=topic_id, post=None)
+        return
     if post is None:
         raise typer.Exit(code=1)
     console.print_json(data=post)
@@ -94,7 +107,31 @@ def show_command(
 def search_reindex_command(
     db_path: Path = typer.Option(DEFAULT_DB_PATH, "--db", exists=True, dir_okay=False),
 ) -> None:
-    console.print_json(data=rebuild_search_index(db_path))
+    try:
+        console.print_json(data=rebuild_search_index(db_path))
+    except sqlite3.OperationalError as exc:
+        try:
+            raise_if_database_locked(exc, db_path)
+        except ForumDatabaseBusyError as busy:
+            _print_busy(
+                busy,
+                fts_available=False,
+                forum_docs=0,
+                knowledge_docs=0,
+                doc_chunks=0,
+                indexed_documents=0,
+            )
+            return
+        raise
+    except ForumDatabaseBusyError as exc:
+        _print_busy(
+            exc,
+            fts_available=False,
+            forum_docs=0,
+            knowledge_docs=0,
+            doc_chunks=0,
+            indexed_documents=0,
+        )
 
 
 @app.command("ingest-docs")
@@ -109,9 +146,53 @@ def ingest_docs_command(
     ),
 ) -> None:
     """Ingest a directory of markdown documents into the database."""
-    ingest_result = ingest_documents_impl(directory, db_path, rebuild=rebuild, prune=prune)
-    search_index = rebuild_search_index(db_path)
-    console.print_json(data={**ingest_result, "search_index": search_index})
+    try:
+        ingest_result = ingest_documents_impl(directory, db_path, rebuild=rebuild, prune=prune)
+        search_index = rebuild_search_index(db_path)
+        console.print_json(data={**ingest_result, "search_index": search_index})
+    except sqlite3.OperationalError as exc:
+        try:
+            raise_if_database_locked(exc, db_path)
+        except ForumDatabaseBusyError as busy:
+            _print_busy(
+                busy,
+                directory=str(directory),
+                indexed_documents=0,
+                pruned=0,
+                seen=0,
+                inserted=0,
+                updated=0,
+                skipped=0,
+                chunks_written=0,
+                search_index={
+                    "fts_available": False,
+                    "forum_docs": 0,
+                    "knowledge_docs": 0,
+                    "doc_chunks": 0,
+                    "indexed_documents": 0,
+                },
+            )
+            return
+        raise
+    except ForumDatabaseBusyError as exc:
+        _print_busy(
+            exc,
+            directory=str(directory),
+            indexed_documents=0,
+            pruned=0,
+            seen=0,
+            inserted=0,
+            updated=0,
+            skipped=0,
+            chunks_written=0,
+            search_index={
+                "fts_available": False,
+                "forum_docs": 0,
+                "knowledge_docs": 0,
+                "doc_chunks": 0,
+                "indexed_documents": 0,
+            },
+        )
 
 
 @app.command("search-docs")
@@ -120,11 +201,20 @@ def search_docs_command(
     db_path: Path = typer.Option(DEFAULT_DB_PATH, "--db", exists=True, dir_okay=False, readable=True),
     top_k: int = typer.Option(5, "--top-k", min=1, max=20),
 ) -> None:
-    import sqlite3 as _sqlite3
-
-    with _sqlite3.connect(db_path) as conn:
-        conn.row_factory = _sqlite3.Row
-        results = search_doc_records(conn, query=query, top_k=top_k)
+    try:
+        with sqlite3.connect(db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            results = search_doc_records(conn, query=query, top_k=top_k)
+    except ForumDatabaseBusyError as exc:
+        _print_busy(exc, query=query, results=[])
+        return
+    except sqlite3.OperationalError as exc:
+        try:
+            raise_if_database_locked(exc, db_path)
+        except ForumDatabaseBusyError as busy:
+            _print_busy(busy, query=query, results=[])
+            return
+        raise
     table = Table(title=f"Top {len(results)}")
     for name in ("slug", "title", "score"):
         table.add_column(name)
@@ -138,8 +228,19 @@ def show_doc_command(
     slug: str = typer.Argument(..., help="Document slug"),
     db_path: Path = typer.Option(DEFAULT_DB_PATH, "--db", exists=True, dir_okay=False, readable=True),
 ) -> None:
-    with DocumentStore(db_path) as store:
-        document = store.get_document(slug)
+    try:
+        with DocumentStore(db_path) as store:
+            document = store.get_document(slug)
+    except ForumDatabaseBusyError as exc:
+        _print_busy(exc, slug=slug, document=None)
+        return
+    except sqlite3.OperationalError as exc:
+        try:
+            raise_if_database_locked(exc, db_path)
+        except ForumDatabaseBusyError as busy:
+            _print_busy(busy, slug=slug, document=None)
+            return
+        raise
     if document is None:
         raise typer.Exit(code=1)
     console.print_json(data=document)

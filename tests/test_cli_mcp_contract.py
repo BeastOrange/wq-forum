@@ -19,7 +19,9 @@ from wq_forum_rag.mcp_server import (
     get_post,
     rebuild_search_index,
     related_posts,
+    search_docs,
     search_forum,
+    search_knowledge,
 )
 
 
@@ -286,6 +288,65 @@ def test_mcp_get_post_returns_locked_payload_when_db_is_busy(tmp_path: Path, mon
     assert payload["status"] == "locked"
     assert payload["post"] is None
     assert payload["json"] == str(json_path)
+
+
+def test_mcp_knowledge_and_docs_return_locked_payload_when_db_is_busy(tmp_path: Path) -> None:
+    json_path = tmp_path / "forum.json"
+    db_path = tmp_path / "forum.sqlite3"
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "Alpha.md").write_text("# Alpha\n\ncontent", encoding="utf-8")
+    _write_fixture(json_path)
+    runner = CliRunner()
+    runner.invoke(app, ["index", "--json", str(json_path), "--db", str(db_path), "--rebuild"])
+    runner.invoke(app, ["ingest-docs", str(docs_dir), "--db", str(db_path), "--rebuild"])
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("BEGIN EXCLUSIVE")
+        knowledge_payload = search_knowledge("alpha", db=str(db_path), top_k=3)
+        docs_payload = search_docs("alpha", db=str(db_path), top_k=3)
+        reindex_payload = rebuild_search_index(db=str(db_path))
+    finally:
+        conn.rollback()
+        conn.close()
+
+    assert knowledge_payload["status"] == "locked"
+    assert knowledge_payload["results"] == []
+    assert docs_payload["status"] == "locked"
+    assert docs_payload["results"] == []
+    assert reindex_payload["status"] == "locked"
+    assert reindex_payload["fts_available"] is False
+
+
+def test_cli_commands_report_locked_payload_when_db_is_busy(tmp_path: Path, monkeypatch) -> None:
+    json_path = tmp_path / "WQPCommunityState_20260618_142702.json"
+    db_path = tmp_path / "forum.sqlite3"
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "Alpha.md").write_text("# Alpha\n\ncontent", encoding="utf-8")
+    _write_fixture(json_path)
+    runner = CliRunner()
+    runner.invoke(app, ["refresh", str(json_path), "--db", str(db_path), "--rebuild"])
+    runner.invoke(app, ["ingest-docs", str(docs_dir), "--db", str(db_path), "--rebuild"])
+    monkeypatch.setenv("WQ_FORUM_RAG_SOURCE", str(json_path))
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("BEGIN EXCLUSIVE")
+        search_result = runner.invoke(app, ["search", "alpha", "--db", str(db_path)])
+        docs_result = runner.invoke(app, ["search-docs", "alpha", "--db", str(db_path)])
+        context_result = runner.invoke(app, ["evolve-context", "alpha", "--db", str(db_path)])
+    finally:
+        conn.rollback()
+        conn.close()
+
+    assert search_result.exit_code == 0
+    assert '"status": "locked"' in search_result.stdout
+    assert docs_result.exit_code == 0
+    assert '"status": "locked"' in docs_result.stdout
+    assert context_result.exit_code == 0
+    assert '"status": "locked"' in context_result.stdout
 
 
 def test_refresh_command_prunes_orphans_and_commits_manifest(tmp_path: Path) -> None:

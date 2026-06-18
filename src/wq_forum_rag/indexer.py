@@ -178,8 +178,7 @@ class ForumIndexService:
             raise ForumDatabaseBusyError(refresh)
 
     def _raise_if_locked(self, exc: sqlite3.OperationalError) -> None:
-        if is_database_locked(exc):
-            raise ForumDatabaseBusyError(database_locked_status(self.db_path, reason=str(exc))) from exc
+        raise_if_database_locked(exc, self.db_path)
 
     def _needs_refresh(self, source: Path) -> bool:
         if not self.db_path.exists():
@@ -438,6 +437,18 @@ def _auto_refresh_enabled() -> bool:
 
 def is_database_locked(exc: sqlite3.OperationalError) -> bool:
     return "locked" in str(exc).lower()
+
+
+def raise_if_database_locked(
+    exc: sqlite3.OperationalError,
+    db_path: str | Path,
+    *,
+    json_path: str | Path | None = None,
+) -> None:
+    if is_database_locked(exc):
+        raise ForumDatabaseBusyError(
+            database_locked_status(db_path, json_path=json_path, reason=str(exc))
+        ) from exc
 
 
 def database_locked_status(
