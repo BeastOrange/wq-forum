@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 from typing import Any
 
+from wq_forum_rag.indexer import raise_if_database_locked
 from wq_forum_rag.knowledge import KnowledgeStore, normalize_relation, normalize_slug
 
 
@@ -23,10 +25,14 @@ class WikiService:
     ) -> dict[str, Any]:
         root = Path(output_dir)
         root.mkdir(parents=True, exist_ok=True)
-        with KnowledgeStore(self.db_path) as store:
-            pages = [store.get_page(item["slug"]) for item in store.list_pages(include_drafts=include_drafts)]
-            pages = [page for page in pages if page]
-            events = self._recent_events(store)
+        try:
+            with KnowledgeStore(self.db_path, initialize=False) as store:
+                pages = [store.get_page(item["slug"]) for item in store.list_pages(include_drafts=include_drafts)]
+                pages = [page for page in pages if page]
+                events = self._recent_events(store)
+        except sqlite3.OperationalError as exc:
+            raise_if_database_locked(exc, self.db_path)
+            raise
         written = []
         for page in pages:
             path = root / f"{page['slug']}.md"
@@ -55,20 +61,24 @@ class WikiService:
         seen = {start}
         frontier = {start}
         edges: list[dict[str, Any]] = []
-        with KnowledgeStore(self.db_path) as store:
-            for _ in range(max(depth, 0)):
-                next_frontier: set[str] = set()
-                for node in sorted(frontier):
-                    for edge in self._neighbor_edges(store, node, relation):
-                        edges.append(edge)
-                        for candidate in (edge["source_slug"], edge["target_slug"]):
-                            if candidate not in seen:
-                                seen.add(candidate)
-                                next_frontier.add(candidate)
-                frontier = next_frontier
-                if not frontier:
-                    break
-            nodes = [store.get_page(node) or {"slug": node, "missing": True} for node in sorted(seen)]
+        try:
+            with KnowledgeStore(self.db_path, initialize=False) as store:
+                for _ in range(max(depth, 0)):
+                    next_frontier: set[str] = set()
+                    for node in sorted(frontier):
+                        for edge in self._neighbor_edges(store, node, relation):
+                            edges.append(edge)
+                            for candidate in (edge["source_slug"], edge["target_slug"]):
+                                if candidate not in seen:
+                                    seen.add(candidate)
+                                    next_frontier.add(candidate)
+                    frontier = next_frontier
+                    if not frontier:
+                        break
+                nodes = [store.get_page(node) or {"slug": node, "missing": True} for node in sorted(seen)]
+        except sqlite3.OperationalError as exc:
+            raise_if_database_locked(exc, self.db_path)
+            raise
         return {"start": start, "depth": depth, "nodes": nodes, "edges": edges}
 
     def _neighbor_edges(
@@ -77,6 +87,8 @@ class WikiService:
         slug: str,
         relation_type: str | None,
     ) -> list[dict[str, Any]]:
+        if not store._table_exists("knowledge_links"):  # noqa: SLF001
+            return []
         params: list[Any] = [slug, slug]
         relation_sql = ""
         if relation_type:

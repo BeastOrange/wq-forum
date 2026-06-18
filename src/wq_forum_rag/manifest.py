@@ -51,6 +51,8 @@ IGNORED_SUFFIXES = {
     ".pptx",
     ".pyc",
     ".so",
+    ".sqlite",
+    ".sqlite3",
     ".tar",
     ".tif",
     ".tiff",
@@ -89,12 +91,13 @@ class ManifestEntry:
 
 
 class SourceManifestStore:
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(self, db_path: str | Path, *, initialize: bool = True) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
-        self._init_schema()
+        if initialize:
+            self._init_schema()
 
     def close(self) -> None:
         self.conn.close()
@@ -106,6 +109,8 @@ class SourceManifestStore:
         self.close()
 
     def load_entries(self, source_root: Path) -> dict[str, ManifestEntry]:
+        if not self._table_exists("source_manifest"):
+            return {}
         rows = self.conn.execute(
             """
             SELECT relative_path, sha256, mtime_ns, size
@@ -164,6 +169,13 @@ class SourceManifestStore:
         )
         self.conn.commit()
 
+    def _table_exists(self, name: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+            (name,),
+        ).fetchone()
+        return row is not None
+
 
 class SourceManifestService:
     def __init__(self, db_path: str | Path) -> None:
@@ -184,7 +196,7 @@ class SourceManifestService:
     ) -> dict[str, Any]:
         root = Path(source).expanduser().resolve()
         current_entries = scan_source_manifest(root)
-        with SourceManifestStore(self.db_path) as store:
+        with SourceManifestStore(self.db_path, initialize=commit) as store:
             previous_entries = store.load_entries(root)
             delta = diff_manifest_entries(current_entries, previous_entries)
             if commit:

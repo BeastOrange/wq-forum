@@ -5,11 +5,13 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 from typing import Any
 
-from wq_forum_rag.indexer import ForumDatabaseBusyError, ForumIndexService
+from wq_forum_rag.indexer import ForumDatabaseBusyError, ForumIndexService, raise_if_database_locked
 from wq_forum_rag.knowledge import DRAFT, PUBLISHED, KnowledgePage, KnowledgeStore
+from wq_forum_rag.search_cache import CachedEmbeddingBackend
 from wq_forum_rag.search_records import search_forum_records, search_knowledge_records
 from wq_forum_rag.storage import ForumStore
 from wq_forum_rag.wiki import WikiService
@@ -83,6 +85,8 @@ class EvolutionService:
             }
 
     def publish_knowledge_page(self, slug: str) -> dict[str, Any]:
+        if self.get_knowledge_page(slug) is None:
+            return {"published": False, "slug": slug, "issues": [{"slug": slug, "severity": "block", "code": "missing_page"}]}
         issues = self.lint_knowledge(slug=slug)["issues"]
         blockers = [item for item in issues if item["severity"] == "block"]
         if blockers:
@@ -91,8 +95,12 @@ class EvolutionService:
             return {"published": True, "page": store.set_status(slug, PUBLISHED, "manual publish")}
 
     def get_knowledge_page(self, slug: str) -> dict[str, Any] | None:
-        with KnowledgeStore(self.db_path) as store:
-            return store.get_page(slug)
+        try:
+            with KnowledgeStore(self.db_path, initialize=False) as store:
+                return store.get_page(slug)
+        except sqlite3.OperationalError as exc:
+            raise_if_database_locked(exc, self.db_path)
+            raise
 
     def link_knowledge_pages(
         self,
@@ -120,22 +128,28 @@ class EvolutionService:
         include_drafts: bool = False,
     ) -> list[dict[str, Any]]:
         self._ensure_forum_fresh()
-        with ForumStore(self.db_path) as store:
+        with ForumStore(self.db_path, initialize=False) as store:
             return search_knowledge_records(
                 store.conn,
                 query,
                 top_k=top_k,
                 include_drafts=include_drafts,
+                embedding_backend=CachedEmbeddingBackend(self.db_path, writable=False),
             )
 
     def search_forum(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
         self._ensure_forum_fresh()
-        with ForumStore(self.db_path) as store:
-            return search_forum_records(store.conn, query, top_k=top_k)
+        with ForumStore(self.db_path, initialize=False) as store:
+            return search_forum_records(
+                store.conn,
+                query,
+                top_k=top_k,
+                embedding_backend=CachedEmbeddingBackend(self.db_path, writable=False),
+            )
 
     def get_post(self, topic_id: str) -> dict[str, Any] | None:
         self._ensure_forum_fresh()
-        with ForumStore(self.db_path) as store:
+        with ForumStore(self.db_path, initialize=False) as store:
             topic = store.get_topic(topic_id)
         if topic is None:
             return None
@@ -144,10 +158,14 @@ class EvolutionService:
         return payload
 
     def lint_knowledge(self, slug: str | None = None) -> dict[str, Any]:
-        with KnowledgeStore(self.db_path) as store:
-            pages = [store.get_page(slug)] if slug else [
-                store.get_page(page["slug"]) for page in store.list_pages(include_drafts=True)
-            ]
+        try:
+            with KnowledgeStore(self.db_path, initialize=False) as store:
+                pages = [store.get_page(slug)] if slug else [
+                    store.get_page(page["slug"]) for page in store.list_pages(include_drafts=True)
+                ]
+        except sqlite3.OperationalError as exc:
+            raise_if_database_locked(exc, self.db_path)
+            raise
         issues: list[dict[str, Any]] = []
         for page in [item for item in pages if item]:
             page_issues = self._lint_page_record(page)

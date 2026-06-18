@@ -15,13 +15,14 @@ from wq_forum_rag.parser import build_chunks
 
 
 class ForumStore:
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(self, db_path: str | Path, *, initialize: bool = True) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
-        self._init_schema()
+        if initialize:
+            self._init_schema()
 
     def close(self) -> None:
         self.conn.close()
@@ -104,6 +105,8 @@ class ForumStore:
         return stats, seen_ids
 
     def get_topic(self, topic_id: str) -> Topic | None:
+        if not self._table_exists("topics"):
+            return None
         row = self.conn.execute(
             """
             SELECT
@@ -143,6 +146,8 @@ class ForumStore:
         return Topic.from_dict(payload)
 
     def iter_chunks(self, topic_id: str | None = None) -> Iterator[Chunk]:
+        if not self._table_exists("chunks"):
+            return
         sql = """
             SELECT
                 chunk_id,
@@ -244,6 +249,8 @@ class ForumStore:
         self.conn.commit()
 
     def _get_topic_hash(self, topic_id: str) -> str | None:
+        if not self._table_exists("topics"):
+            return None
         row = self.conn.execute(
             "SELECT content_hash FROM topics WHERE topic_id = ?",
             (topic_id,),
@@ -251,9 +258,18 @@ class ForumStore:
         return None if row is None else str(row["content_hash"])
 
     def _has_chunks(self, topic_id: str) -> bool:
+        if not self._table_exists("chunks"):
+            return False
         row = self.conn.execute(
             "SELECT 1 FROM chunks WHERE topic_id = ? LIMIT 1",
             (topic_id,),
+        ).fetchone()
+        return row is not None
+
+    def _table_exists(self, name: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+            (name,),
         ).fetchone()
         return row is not None
 

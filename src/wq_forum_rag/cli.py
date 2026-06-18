@@ -17,6 +17,7 @@ from wq_forum_rag.documents import ingest_documents as ingest_documents_impl, Do
 from wq_forum_rag.evolution_cli import register_evolution_commands
 from wq_forum_rag.indexer import ForumDatabaseBusyError, ForumIndexService, raise_if_database_locked
 from wq_forum_rag.manifest import SourceManifestService
+from wq_forum_rag.search_cache import CachedEmbeddingBackend
 from wq_forum_rag.source_cli import register_source_commands
 from wq_forum_rag.search_index import rebuild_search_index
 from wq_forum_rag.search_records import search_doc_records
@@ -204,7 +205,12 @@ def search_docs_command(
     try:
         with sqlite3.connect(db_path) as conn:
             conn.row_factory = sqlite3.Row
-            results = search_doc_records(conn, query=query, top_k=top_k)
+            results = search_doc_records(
+                conn,
+                query=query,
+                top_k=top_k,
+                embedding_backend=CachedEmbeddingBackend(db_path, writable=False),
+            )
     except ForumDatabaseBusyError as exc:
         _print_busy(exc, query=query, results=[])
         return
@@ -229,7 +235,7 @@ def show_doc_command(
     db_path: Path = typer.Option(DEFAULT_DB_PATH, "--db", exists=True, dir_okay=False, readable=True),
 ) -> None:
     try:
-        with DocumentStore(db_path) as store:
+        with DocumentStore(db_path, initialize=False) as store:
             document = store.get_document(slug)
     except ForumDatabaseBusyError as exc:
         _print_busy(exc, slug=slug, document=None)

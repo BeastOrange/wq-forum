@@ -313,6 +313,28 @@ def test_propose_knowledge_page_auto_refreshes_before_topic_validation(
     assert {item["topic_id"] for item in proposed["page"]["sources"]} == {"t3"}
 
 
+def test_empty_database_write_paths_fail_with_domain_errors_not_sqlite(tmp_path: Path) -> None:
+    db_path = tmp_path / "empty.sqlite3"
+    db_path.touch()
+
+    with pytest.raises(ValueError, match="source_topic_ids must reference existing forum topics"):
+        EvolutionService(db_path).propose_knowledge_page(
+            slug="alpha/test",
+            title="Alpha",
+            summary="Summary with enough length for a valid page.",
+            body="Body with enough content for a valid page that still lacks sources.",
+            source_topic_ids=["t1"],
+            confidence=0.9,
+        )
+
+    publish = EvolutionService(db_path).publish_knowledge_page("alpha/missing")
+    assert publish["published"] is False
+    assert publish["issues"] == [{"slug": "alpha/missing", "severity": "block", "code": "missing_page"}]
+
+    with pytest.raises(ValueError, match="both source_slug and target_slug must reference existing knowledge pages"):
+        EvolutionService(db_path).link_knowledge_pages("alpha/a", "alpha/b", "refines")
+
+
 def test_normalize_slug_rejects_path_traversal_segments() -> None:
     with pytest.raises(ValueError, match="slug must not contain path traversal"):
         normalize_slug("alpha/../../escape")

@@ -15,6 +15,7 @@ from .documents import DocumentStore, ingest_documents
 from .evolution import EvolutionService
 from .indexer import ForumDatabaseBusyError, raise_if_database_locked
 from .manifest import SourceManifestService
+from .search_cache import CachedEmbeddingBackend
 from .search_index import rebuild_search_index as rebuild_search_index_impl
 from .search_records import search_doc_records, search_knowledge_records
 from .storage import ForumStore
@@ -92,7 +93,17 @@ def related_posts(topic_id: str, db: str | None = None, top_k: int = 5) -> dict[
 
 
 def source_status(source: str, db: str | None = None) -> dict[str, Any]:
-    return SourceManifestService(_resolve_db_path(db)).source_status(source)
+    db_path = _resolve_db_path(db)
+    try:
+        return SourceManifestService(db_path).source_status(source)
+    except ForumDatabaseBusyError as exc:
+        return _busy_payload(exc, source=source, counts={}, files={})
+    except sqlite3.OperationalError as exc:
+        try:
+            raise_if_database_locked(exc, db_path)
+        except ForumDatabaseBusyError as busy:
+            return _busy_payload(busy, source=source, counts={}, files={})
+        raise
 
 
 def source_ingest_plan(
@@ -100,7 +111,17 @@ def source_ingest_plan(
     db: str | None = None,
     commit: bool = False,
 ) -> dict[str, Any]:
-    return SourceManifestService(_resolve_db_path(db)).source_ingest_plan(source, commit=commit)
+    db_path = _resolve_db_path(db)
+    try:
+        return SourceManifestService(db_path).source_ingest_plan(source, commit=commit)
+    except ForumDatabaseBusyError as exc:
+        return _busy_payload(exc, source=source, ingest_plan=[], delete_plan=[])
+    except sqlite3.OperationalError as exc:
+        try:
+            raise_if_database_locked(exc, db_path)
+        except ForumDatabaseBusyError as busy:
+            return _busy_payload(busy, source=source, ingest_plan=[], delete_plan=[])
+        raise
 
 
 def build_evolution_context(query: str, db: str | None = None, top_k: int = 5) -> dict[str, Any]:
@@ -151,12 +172,13 @@ def search_knowledge(
 ) -> dict[str, Any]:
     db_path = _resolve_db_path(db)
     try:
-        with ForumStore(db_path) as store:
+        with ForumStore(db_path, initialize=False) as store:
             results = search_knowledge_records(
                 store.conn,
                 query=query,
                 top_k=top_k,
                 include_drafts=include_drafts,
+                embedding_backend=CachedEmbeddingBackend(db_path, writable=False),
             )
     except ForumDatabaseBusyError as exc:
         return _busy_payload(exc, query=query, results=[])
@@ -175,6 +197,12 @@ def get_knowledge_page(slug: str, db: str | None = None) -> dict[str, Any]:
         page = EvolutionService(db_path).get_knowledge_page(slug)
     except ForumDatabaseBusyError as exc:
         return _busy_payload(exc, slug=slug, page=None)
+    except sqlite3.OperationalError as exc:
+        try:
+            raise_if_database_locked(exc, db_path)
+        except ForumDatabaseBusyError as busy:
+            return _busy_payload(busy, slug=slug, page=None)
+        raise
     return {"slug": slug, "db": str(db_path), "page": page}
 
 
@@ -197,6 +225,12 @@ def link_knowledge_pages(
         )
     except ForumDatabaseBusyError as exc:
         return _busy_payload(exc, link=None)
+    except sqlite3.OperationalError as exc:
+        try:
+            raise_if_database_locked(exc, db_path)
+        except ForumDatabaseBusyError as busy:
+            return _busy_payload(busy, link=None)
+        raise
     return {"db": str(db_path), "link": link}
 
 
@@ -206,6 +240,12 @@ def lint_knowledge(db: str | None = None, slug: str | None = None) -> dict[str, 
         result = EvolutionService(db_path).lint_knowledge(slug=slug)
     except ForumDatabaseBusyError as exc:
         return _busy_payload(exc, slug=slug, issues=[], blocking_count=0, warning_count=0)
+    except sqlite3.OperationalError as exc:
+        try:
+            raise_if_database_locked(exc, db_path)
+        except ForumDatabaseBusyError as busy:
+            return _busy_payload(busy, slug=slug, issues=[], blocking_count=0, warning_count=0)
+        raise
     return {"db": str(db_path), **result}
 
 
@@ -215,6 +255,12 @@ def publish_knowledge_page(slug: str, db: str | None = None) -> dict[str, Any]:
         result = EvolutionService(db_path).publish_knowledge_page(slug)
     except ForumDatabaseBusyError as exc:
         return _busy_payload(exc, published=False, page=None, issues=[])
+    except sqlite3.OperationalError as exc:
+        try:
+            raise_if_database_locked(exc, db_path)
+        except ForumDatabaseBusyError as busy:
+            return _busy_payload(busy, published=False, page=None, issues=[])
+        raise
     return {"db": str(db_path), **result}
 
 
@@ -233,6 +279,12 @@ def graph_query(
         )
     except ForumDatabaseBusyError as exc:
         return _busy_payload(exc, start=slug, depth=depth, nodes=[], edges=[])
+    except sqlite3.OperationalError as exc:
+        try:
+            raise_if_database_locked(exc, db_path)
+        except ForumDatabaseBusyError as busy:
+            return _busy_payload(busy, start=slug, depth=depth, nodes=[], edges=[])
+        raise
     return {"db": str(db_path), **result}
 
 
@@ -249,6 +301,12 @@ def export_knowledge_wiki(
         )
     except ForumDatabaseBusyError as exc:
         return _busy_payload(exc, output_dir=str(output_dir), page_count=0, written=[])
+    except sqlite3.OperationalError as exc:
+        try:
+            raise_if_database_locked(exc, db_path)
+        except ForumDatabaseBusyError as busy:
+            return _busy_payload(busy, output_dir=str(output_dir), page_count=0, written=[])
+        raise
     return {"db": str(db_path), **result}
 
 
@@ -284,8 +342,13 @@ def rebuild_search_index(db: str | None = None) -> dict[str, Any]:
 def search_docs(query: str, db: str | None = None, top_k: int = 5) -> dict[str, Any]:
     db_path = _resolve_db_path(db)
     try:
-        with ForumStore(db_path) as store:
-            results = search_doc_records(store.conn, query=query, top_k=top_k)
+        with ForumStore(db_path, initialize=False) as store:
+            results = search_doc_records(
+                store.conn,
+                query=query,
+                top_k=top_k,
+                embedding_backend=CachedEmbeddingBackend(db_path, writable=False),
+            )
     except ForumDatabaseBusyError as exc:
         return _busy_payload(exc, query=query, results=[])
     except sqlite3.OperationalError as exc:
@@ -300,7 +363,7 @@ def search_docs(query: str, db: str | None = None, top_k: int = 5) -> dict[str, 
 def get_doc(slug: str, db: str | None = None) -> dict[str, Any]:
     db_path = _resolve_db_path(db)
     try:
-        with DocumentStore(db_path) as store:
+        with DocumentStore(db_path, initialize=False) as store:
             document = store.get_document(slug)
     except ForumDatabaseBusyError as exc:
         return _busy_payload(exc, slug=slug, document=None)

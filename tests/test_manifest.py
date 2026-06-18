@@ -115,6 +115,7 @@ def test_source_manifest_ignores_binary_and_cache_inputs(tmp_path: Path) -> None
     _write_bytes(source_dir / "report.pdf", b"%PDF-1.7")
     _write_bytes(source_dir / "clip.mp4", b"\x00\x00\x00\x18ftyp")
     _write_bytes(source_dir / "audio.mp3", b"ID3")
+    _write_bytes(source_dir / "forum.sqlite3", b"")
 
     payload = source_status(str(source_dir), db=str(db_path))
     assert payload["counts"] == {"new": 1, "modified": 0, "unchanged": 0, "deleted": 0}

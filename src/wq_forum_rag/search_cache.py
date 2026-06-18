@@ -19,14 +19,18 @@ class CachedEmbeddingBackend:
         db_path: str | Path,
         backend: EmbeddingBackend | None = None,
         backend_id: str | None = None,
+        *,
+        writable: bool = True,
     ) -> None:
         from wq_forum_rag.search_index import init_search_schema
 
         self.db_path = Path(db_path)
         self.backend = backend or build_embedding_backend()
         self.backend_id = backend_id or _backend_id(self.backend)
-        with sqlite3.connect(self.db_path) as conn:
-            init_search_schema(conn)
+        self.writable = writable
+        if self.writable:
+            with sqlite3.connect(self.db_path) as conn:
+                init_search_schema(conn)
 
     def embed_query(self, text: str) -> list[float]:
         return self.embed_documents([text])[0]
@@ -41,7 +45,10 @@ class CachedEmbeddingBackend:
                 vectors.append(cached)
                 if cached is None:
                     misses.append((index, content_hash, text))
-            self._fill_misses(conn, misses, vectors)
+            if self.writable:
+                self._fill_misses(conn, misses, vectors)
+            else:
+                self._fill_misses_read_only(misses, vectors)
         return [vector or [] for vector in vectors]
 
     def _cached_vector(self, conn: sqlite3.Connection, content_hash: str) -> list[float] | None:
@@ -73,6 +80,17 @@ class CachedEmbeddingBackend:
                 for (_, content_hash, _), vector in zip(misses, embedded, strict=True)
             ],
         )
+        for (index, _, _), vector in zip(misses, embedded, strict=True):
+            vectors[index] = vector
+
+    def _fill_misses_read_only(
+        self,
+        misses: list[tuple[int, str, str]],
+        vectors: list[list[float] | None],
+    ) -> None:
+        if not misses:
+            return
+        embedded = self.backend.embed_documents([item[2] for item in misses])
         for (index, _, _), vector in zip(misses, embedded, strict=True):
             vectors[index] = vector
 

@@ -74,13 +74,14 @@ def normalize_relation(value: str) -> str:
 
 
 class KnowledgeStore:
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(self, db_path: str | Path, *, initialize: bool = True) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
-        self._init_schema()
+        if initialize:
+            self._init_schema()
 
     def close(self) -> None:
         self.conn.close()
@@ -149,6 +150,8 @@ class KnowledgeStore:
         return page
 
     def get_page(self, slug: str) -> dict[str, Any] | None:
+        if not self._table_exists("knowledge_pages"):
+            return None
         row = self.conn.execute(
             "SELECT * FROM knowledge_pages WHERE slug = ?",
             (normalize_slug(slug),),
@@ -164,6 +167,8 @@ class KnowledgeStore:
         return payload
 
     def list_pages(self, *, include_drafts: bool = False) -> list[dict[str, Any]]:
+        if not self._table_exists("knowledge_pages"):
+            return []
         where = "" if include_drafts else "WHERE status = 'published'"
         rows = self.conn.execute(
             f"""
@@ -177,12 +182,23 @@ class KnowledgeStore:
     def topic_ids_exist(self, topic_ids: list[str]) -> bool:
         if not topic_ids:
             return False
+        if not self._table_exists("topics"):
+            return False
         placeholders = ",".join("?" for _ in topic_ids)
         row = self.conn.execute(
             f"SELECT COUNT(*) FROM topics WHERE topic_id IN ({placeholders})",
             tuple(topic_ids),
         ).fetchone()
         return int(row[0]) == len(set(topic_ids))
+
+    def page_exists(self, slug: str) -> bool:
+        if not self._table_exists("knowledge_pages"):
+            return False
+        row = self.conn.execute(
+            "SELECT 1 FROM knowledge_pages WHERE slug = ? LIMIT 1",
+            (normalize_slug(slug),),
+        ).fetchone()
+        return row is not None
 
     def link_pages(
         self,
@@ -196,6 +212,8 @@ class KnowledgeStore:
         source = normalize_slug(source_slug)
         target = normalize_slug(target_slug)
         relation = normalize_relation(relation_type)
+        if not self.page_exists(source) or not self.page_exists(target):
+            raise ValueError("both source_slug and target_slug must reference existing knowledge pages")
         bounded_confidence = max(0.0, min(float(confidence), 1.0))
         with self.conn:
             self.conn.execute(
@@ -222,6 +240,8 @@ class KnowledgeStore:
     def set_status(self, slug: str, status: str, note: str = "") -> dict[str, Any] | None:
         page_slug = normalize_slug(slug)
         normalized_status = normalize_status(status)
+        if not self.page_exists(page_slug):
+            return None
         with self.conn:
             self.conn.execute(
                 """
@@ -299,7 +319,16 @@ class KnowledgeStore:
         ).fetchall()
 
     def _event_rows(self, slug: str) -> list[sqlite3.Row]:
+        if not self._table_exists("knowledge_events"):
+            return []
         return self.conn.execute(
             "SELECT * FROM knowledge_events WHERE slug = ? ORDER BY event_id DESC LIMIT 20",
             (slug,),
         ).fetchall()
+
+    def _table_exists(self, name: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+            (name,),
+        ).fetchone()
+        return row is not None

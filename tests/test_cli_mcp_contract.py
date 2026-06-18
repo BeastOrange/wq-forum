@@ -16,12 +16,21 @@ from wq_forum_rag.indexer import ForumIndexService
 from wq_forum_rag.knowledge import KnowledgeStore
 from wq_forum_rag.mcp_server import (
     find_by_exact,
+    get_doc,
+    get_knowledge_page,
+    graph_query,
+    lint_knowledge,
     get_post,
+    link_knowledge_pages,
+    publish_knowledge_page,
+    propose_knowledge_page,
     rebuild_search_index,
     related_posts,
     search_docs,
     search_forum,
     search_knowledge,
+    source_ingest_plan,
+    source_status,
 )
 
 
@@ -205,6 +214,72 @@ def test_mcp_tool_contract_without_client(tmp_path: Path) -> None:
     assert reindex_payload["fts_available"] is True
 
 
+def test_mcp_read_only_tools_tolerate_existing_empty_database(tmp_path: Path) -> None:
+    db_path = tmp_path / "empty.sqlite3"
+    db_path.touch()
+
+    assert search_forum("alpha", db=str(db_path))["results"] == []
+    assert get_post("t1", db=str(db_path))["post"] is None
+    assert find_by_exact("alpha", db=str(db_path))["results"] == []
+    assert related_posts("t1", db=str(db_path))["results"] == []
+    assert search_docs("alpha", db=str(db_path))["results"] == []
+    assert get_doc("alpha", db=str(db_path))["document"] is None
+    assert search_knowledge("alpha", db=str(db_path))["results"] == []
+    assert get_knowledge_page("alpha/x", db=str(db_path))["page"] is None
+    assert lint_knowledge(db=str(db_path))["blocking_count"] == 0
+    assert graph_query("alpha/x", db=str(db_path))["nodes"] == [{"slug": "alpha/x", "missing": True}]
+
+
+def test_mcp_write_tools_tolerate_existing_empty_database(tmp_path: Path) -> None:
+    db_path = tmp_path / "empty.sqlite3"
+    db_path.touch()
+
+    try:
+        propose_knowledge_page(
+            slug="alpha/test",
+            title="Alpha",
+            summary="Summary with enough length for a valid page.",
+            body="Body with enough content for a valid page that still lacks sources.",
+            source_topic_ids=["t1"],
+            confidence=0.9,
+            db=str(db_path),
+        )
+    except ValueError as exc:
+        assert "source_topic_ids must reference existing forum topics" in str(exc)
+    else:
+        raise AssertionError("propose_knowledge_page should reject missing forum topics")
+
+    publish_payload = publish_knowledge_page("alpha/missing", db=str(db_path))
+    assert publish_payload["published"] is False
+    assert publish_payload["issues"] == [{"slug": "alpha/missing", "severity": "block", "code": "missing_page"}]
+
+    try:
+        link_knowledge_pages("alpha/a", "alpha/b", "refines", db=str(db_path))
+    except ValueError as exc:
+        assert "both source_slug and target_slug must reference existing knowledge pages" in str(exc)
+    else:
+        raise AssertionError("link_knowledge_pages should reject missing knowledge pages")
+
+
+def test_cli_read_only_tools_tolerate_existing_empty_database(tmp_path: Path) -> None:
+    db_path = tmp_path / "empty.sqlite3"
+    db_path.touch()
+    runner = CliRunner()
+
+    search_result = runner.invoke(app, ["search", "alpha", "--db", str(db_path)])
+    show_result = runner.invoke(app, ["show", "t1", "--db", str(db_path)])
+    context_result = runner.invoke(app, ["evolve-context", "alpha", "--db", str(db_path)])
+    knowledge_search_result = runner.invoke(app, ["knowledge-search", "alpha", "--db", str(db_path), "--json"])
+
+    assert search_result.exit_code == 0
+    assert "Top 0" in search_result.stdout
+    assert show_result.exit_code == 1
+    assert context_result.exit_code == 0
+    assert '"forum_evidence": []' in context_result.stdout
+    assert knowledge_search_result.exit_code == 0
+    assert '"results": []' in knowledge_search_result.stdout
+
+
 def test_search_auto_refreshes_when_source_json_changes(tmp_path: Path, monkeypatch) -> None:
     json_path = tmp_path / "WQPCommunityState_20260618_142702.json"
     db_path = tmp_path / "forum.sqlite3"
@@ -347,6 +422,175 @@ def test_cli_commands_report_locked_payload_when_db_is_busy(tmp_path: Path, monk
     assert '"status": "locked"' in docs_result.stdout
     assert context_result.exit_code == 0
     assert '"status": "locked"' in context_result.stdout
+
+
+def test_search_can_read_during_immediate_write_transaction(tmp_path: Path, monkeypatch) -> None:
+    json_path = tmp_path / "forum.json"
+    db_path = tmp_path / "forum.sqlite3"
+    _write_fixture(json_path)
+    runner = CliRunner()
+    result = runner.invoke(app, ["index", "--json", str(json_path), "--db", str(db_path), "--rebuild"])
+    assert result.exit_code == 0
+    monkeypatch.setenv("WQ_FORUM_RAG_AUTO_REFRESH", "0")
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        payload = search_forum("alpha", db=str(db_path), top_k=3)
+    finally:
+        conn.rollback()
+        conn.close()
+
+    assert "status" not in payload
+    assert payload["results"]
+
+
+def test_cli_search_can_read_during_immediate_write_transaction(tmp_path: Path, monkeypatch) -> None:
+    json_path = tmp_path / "forum.json"
+    db_path = tmp_path / "forum.sqlite3"
+    _write_fixture(json_path)
+    runner = CliRunner()
+    result = runner.invoke(app, ["index", "--json", str(json_path), "--db", str(db_path), "--rebuild"])
+    assert result.exit_code == 0
+    monkeypatch.setenv("WQ_FORUM_RAG_AUTO_REFRESH", "0")
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        search_result = runner.invoke(app, ["search", "alpha", "--db", str(db_path)])
+    finally:
+        conn.rollback()
+        conn.close()
+
+    assert search_result.exit_code == 0
+    assert '"status": "locked"' not in search_result.stdout
+    assert "Alpha decay" in search_result.stdout
+
+
+def test_knowledge_and_docs_can_read_during_immediate_write_transaction(tmp_path: Path, monkeypatch) -> None:
+    json_path = tmp_path / "forum.json"
+    db_path = tmp_path / "forum.sqlite3"
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "Alpha.md").write_text("# Alpha\n\ncontent", encoding="utf-8")
+    _write_fixture(json_path)
+    runner = CliRunner()
+    assert runner.invoke(app, ["index", "--json", str(json_path), "--db", str(db_path), "--rebuild"]).exit_code == 0
+    assert runner.invoke(app, ["ingest-docs", str(docs_dir), "--db", str(db_path), "--rebuild"]).exit_code == 0
+    from wq_forum_rag.evolution import EvolutionService
+
+    EvolutionService(db_path).propose_knowledge_page(
+        slug="alpha/guide",
+        title="Alpha guide",
+        summary="Summary with enough length for a published page.",
+        body="Body with enough content for a published page linked to topic t1.",
+        source_topic_ids=["t1"],
+        confidence=0.9,
+    )
+    monkeypatch.setenv("WQ_FORUM_RAG_AUTO_REFRESH", "0")
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        knowledge_payload = search_knowledge("alpha", db=str(db_path), top_k=3)
+        docs_payload = search_docs("alpha", db=str(db_path), top_k=3)
+    finally:
+        conn.rollback()
+        conn.close()
+
+    assert "status" not in knowledge_payload
+    assert "status" not in docs_payload
+    assert knowledge_payload["results"]
+    assert docs_payload["results"]
+
+
+def test_read_only_endpoints_do_not_require_optional_schema_during_immediate_write(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    json_path = tmp_path / "forum.json"
+    db_path = tmp_path / "forum.sqlite3"
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "alpha.md").write_text("# Alpha\n", encoding="utf-8")
+    _write_fixture(json_path)
+    runner = CliRunner()
+    assert runner.invoke(app, ["index", "--json", str(json_path), "--db", str(db_path), "--rebuild"]).exit_code == 0
+    monkeypatch.setenv("WQ_FORUM_RAG_AUTO_REFRESH", "0")
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        doc_payload = get_doc("missing", db=str(db_path))
+        page_payload = get_knowledge_page("missing", db=str(db_path))
+        lint_payload = lint_knowledge(db=str(db_path))
+        graph_payload = graph_query("missing", db=str(db_path), depth=1)
+        status_payload = source_status(str(source_dir), db=str(db_path))
+        plan_payload = source_ingest_plan(str(source_dir), db=str(db_path), commit=False)
+    finally:
+        conn.rollback()
+        conn.close()
+
+    assert doc_payload["document"] is None
+    assert "status" not in doc_payload
+    assert page_payload["page"] is None
+    assert "status" not in page_payload
+    assert lint_payload["issues"] == []
+    assert lint_payload["blocking_count"] == 0
+    assert "status" not in lint_payload
+    assert graph_payload["nodes"] == [{"slug": "missing", "missing": True}]
+    assert graph_payload["edges"] == []
+    assert "status" not in graph_payload
+    assert status_payload["counts"] == {"new": 1, "modified": 0, "unchanged": 0, "deleted": 0}
+    assert "status" not in status_payload
+    assert plan_payload["ingest_plan"] == [{"relative_path": "alpha.md", "status": "new"}]
+    assert plan_payload["delete_plan"] == []
+    assert "status" not in plan_payload
+
+
+def test_cli_read_only_commands_do_not_require_optional_schema_during_immediate_write(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    json_path = tmp_path / "forum.json"
+    db_path = tmp_path / "forum.sqlite3"
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    (source_dir / "alpha.md").write_text("# Alpha\n", encoding="utf-8")
+    _write_fixture(json_path)
+    runner = CliRunner()
+    assert runner.invoke(app, ["index", "--json", str(json_path), "--db", str(db_path), "--rebuild"]).exit_code == 0
+    monkeypatch.setenv("WQ_FORUM_RAG_AUTO_REFRESH", "0")
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        show_doc_result = runner.invoke(app, ["show-doc", "missing", "--db", str(db_path)])
+        show_knowledge_result = runner.invoke(app, ["knowledge-show", "missing", "--db", str(db_path)])
+        lint_result = runner.invoke(app, ["knowledge-lint", "--db", str(db_path)])
+        graph_result = runner.invoke(app, ["knowledge-graph", "missing", "--db", str(db_path), "--depth", "1"])
+        source_status_result = runner.invoke(app, ["source-status", str(source_dir), "--db", str(db_path)])
+        source_plan_result = runner.invoke(app, ["source-ingest-plan", str(source_dir), "--db", str(db_path)])
+    finally:
+        conn.rollback()
+        conn.close()
+
+    assert show_doc_result.exit_code == 1
+    assert '"status": "locked"' not in show_doc_result.stdout
+    assert show_knowledge_result.exit_code == 1
+    assert '"status": "locked"' not in show_knowledge_result.stdout
+    assert lint_result.exit_code == 0
+    assert '"blocking_count": 0' in lint_result.stdout
+    assert '"status": "locked"' not in lint_result.stdout
+    assert graph_result.exit_code == 0
+    assert '"missing": true' in graph_result.stdout.lower()
+    assert '"status": "locked"' not in graph_result.stdout
+    assert source_status_result.exit_code == 0
+    assert '"status": "locked"' not in source_status_result.stdout
+    assert '"new": 1' in source_status_result.stdout
+    assert source_plan_result.exit_code == 0
+    assert '"status": "locked"' not in source_plan_result.stdout
+    assert '"relative_path": "alpha.md"' in source_plan_result.stdout
 
 
 def test_refresh_command_prunes_orphans_and_commits_manifest(tmp_path: Path) -> None:

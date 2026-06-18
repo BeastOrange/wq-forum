@@ -147,13 +147,14 @@ def _now_iso() -> str:
 
 
 class DocumentStore:
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(self, db_path: str | Path, *, initialize: bool = True) -> None:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.db_path)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
-        self._init_schema()
+        if initialize:
+            self._init_schema()
 
     def close(self) -> None:
         self.conn.close()
@@ -248,6 +249,8 @@ class DocumentStore:
         return len(to_delete)
 
     def get_document(self, slug: str) -> dict[str, Any] | None:
+        if not self._table_exists("documents"):
+            return None
         row = self.conn.execute(
             "SELECT * FROM documents WHERE slug = ?",
             (slug,),
@@ -255,6 +258,8 @@ class DocumentStore:
         return dict(row) if row else None
 
     def list_documents(self) -> list[dict[str, Any]]:
+        if not self._table_exists("documents"):
+            return []
         rows = self.conn.execute(
             "SELECT slug, title, source_path, content_hash, updated_at FROM documents ORDER BY slug"
         ).fetchall()
@@ -310,6 +315,13 @@ class DocumentStore:
         row = self.conn.execute(
             "SELECT 1 FROM doc_chunks WHERE slug = ? LIMIT 1",
             (slug,),
+        ).fetchone()
+        return row is not None
+
+    def _table_exists(self, name: str) -> bool:
+        row = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+            (name,),
         ).fetchone()
         return row is not None
 

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import typer
@@ -12,7 +13,7 @@ from rich.console import Console
 from rich.table import Table
 
 from wq_forum_rag.evolution import EvolutionService
-from wq_forum_rag.indexer import ForumDatabaseBusyError
+from wq_forum_rag.indexer import ForumDatabaseBusyError, raise_if_database_locked
 
 DEFAULT_DB_PATH = Path(".cache/forum.sqlite3")
 console = Console()
@@ -79,6 +80,13 @@ def register_evolution_commands(app: typer.Typer) -> None:
         except ForumDatabaseBusyError as exc:
             _print_busy(exc, slug=slug, page=None)
             return
+        except sqlite3.OperationalError as exc:
+            try:
+                raise_if_database_locked(exc, db_path)
+            except ForumDatabaseBusyError as busy:
+                _print_busy(busy, slug=slug, page=None)
+                return
+            raise
         if page is None:
             raise typer.Exit(code=1)
         console.print_json(data=page)
@@ -92,6 +100,13 @@ def register_evolution_commands(app: typer.Typer) -> None:
             console.print_json(data=EvolutionService(db_path).lint_knowledge(slug=slug))
         except ForumDatabaseBusyError as exc:
             _print_busy(exc, slug=slug, issues=[], blocking_count=0, warning_count=0)
+        except sqlite3.OperationalError as exc:
+            try:
+                raise_if_database_locked(exc, db_path)
+            except ForumDatabaseBusyError as busy:
+                _print_busy(busy, slug=slug, issues=[], blocking_count=0, warning_count=0)
+                return
+            raise
 
     @app.command("knowledge-graph")
     def knowledge_graph_command(
@@ -110,6 +125,13 @@ def register_evolution_commands(app: typer.Typer) -> None:
             )
         except ForumDatabaseBusyError as exc:
             _print_busy(exc, start=slug, depth=depth, nodes=[], edges=[])
+        except sqlite3.OperationalError as exc:
+            try:
+                raise_if_database_locked(exc, db_path)
+            except ForumDatabaseBusyError as busy:
+                _print_busy(busy, start=slug, depth=depth, nodes=[], edges=[])
+                return
+            raise
 
     @app.command("knowledge-export")
     def knowledge_export_command(
@@ -126,3 +148,10 @@ def register_evolution_commands(app: typer.Typer) -> None:
             )
         except ForumDatabaseBusyError as exc:
             _print_busy(exc, output_dir=str(output_dir), page_count=0, written=[])
+        except sqlite3.OperationalError as exc:
+            try:
+                raise_if_database_locked(exc, db_path)
+            except ForumDatabaseBusyError as busy:
+                _print_busy(busy, output_dir=str(output_dir), page_count=0, written=[])
+                return
+            raise

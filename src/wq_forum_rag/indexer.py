@@ -118,7 +118,7 @@ class ForumIndexService:
             candidates = list(set(fts_candidates(self.db_path, query, kind="forum_chunk")))
             rows = self._search_rows(candidates)
             topic_meta = {row["topic_id"]: row for row in rows}
-            backend = CachedEmbeddingBackend(self.db_path)
+            backend = CachedEmbeddingBackend(self.db_path, writable=False)
             hits = self.search_mod.ForumSearcher(rows, embedding_backend=backend).search(
                 query=query,
                 top_k=max(top_k * 3, top_k),
@@ -131,7 +131,7 @@ class ForumIndexService:
     def get_post(self, topic_id: str) -> dict[str, Any] | None:
         self._ensure_readable()
         try:
-            with self.storage.ForumStore(self.db_path) as store:
+            with self.storage.ForumStore(self.db_path, initialize=False) as store:
                 topic = store.get_topic(topic_id)
         except sqlite3.OperationalError as exc:
             self._raise_if_locked(exc)
@@ -185,7 +185,7 @@ class ForumIndexService:
             return True
         fingerprint = self._source_fingerprint(source)
         try:
-            with self.storage.ForumStore(self.db_path) as store:
+            with self.storage.ForumStore(self.db_path, initialize=False) as store:
                 known = dict(store.conn.execute("SELECT key, value FROM schema_meta").fetchall())
         except Exception:
             return True
@@ -201,7 +201,9 @@ class ForumIndexService:
             WHERE c.chunk_level = 1
         """
         order_clause = " ORDER BY c.topic_id, c.chunk_level, c.chunk_index"
-        with self.storage.ForumStore(self.db_path) as store:
+        with self.storage.ForumStore(self.db_path, initialize=False) as store:
+            if not self._table_exists(store.conn, "chunks") or not self._table_exists(store.conn, "topics"):
+                return []
             if not candidates:
                 return [dict(row) for row in store.conn.execute(base_sql + order_clause).fetchall()]
             placeholders = ",".join("?" * len(candidates))
@@ -245,7 +247,9 @@ class ForumIndexService:
     def _exact_rows(self, normalized: str, *, community: str | None, top_k: int) -> list[Any]:
         lowered = normalized.lower()
         like_value = f"%{lowered}%"
-        with self.storage.ForumStore(self.db_path) as store:
+        with self.storage.ForumStore(self.db_path, initialize=False) as store:
+            if not self._table_exists(store.conn, "topics"):
+                return []
             return store.conn.execute(
                 """
                 SELECT t.topic_id, t.community_id, t.community_title, t.title, t.author,

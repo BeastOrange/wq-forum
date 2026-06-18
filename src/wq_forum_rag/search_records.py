@@ -127,6 +127,8 @@ def search_doc_records(
 
 
 def _backend(conn: sqlite3.Connection, embedding_backend: EmbeddingBackend | None):
+    if isinstance(embedding_backend, CachedEmbeddingBackend):
+        return embedding_backend
     db_path = _db_path(conn)
     if db_path:
         return CachedEmbeddingBackend(db_path, backend=embedding_backend)
@@ -134,6 +136,10 @@ def _backend(conn: sqlite3.Connection, embedding_backend: EmbeddingBackend | Non
 
 
 def _forum_detail_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    from wq_forum_rag.search_index import _table_exists
+
+    if not _table_exists(conn, "chunks") or not _table_exists(conn, "topics"):
+        return []
     return conn.execute(
         """
         SELECT c.chunk_id, c.topic_id, c.community_id, c.content, t.title,
