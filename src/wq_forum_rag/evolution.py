@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from wq_forum_rag.indexer import ForumIndexService
 from wq_forum_rag.knowledge import DRAFT, PUBLISHED, KnowledgePage, KnowledgeStore
 from wq_forum_rag.search_index import search_forum_records, search_knowledge_records
 from wq_forum_rag.storage import ForumStore
@@ -21,6 +22,7 @@ class EvolutionService:
         self.db_path = Path(db_path)
 
     def build_evolution_context(self, query: str, top_k: int = 5) -> dict[str, Any]:
+        self._ensure_forum_fresh()
         knowledge = self.search_knowledge(query, top_k=min(top_k, 5), include_drafts=False)
         forum = self.search_forum(query, top_k=top_k)
         posts = [self.get_post(item["topic_id"]) for item in forum]
@@ -116,6 +118,7 @@ class EvolutionService:
         *,
         include_drafts: bool = False,
     ) -> list[dict[str, Any]]:
+        self._ensure_forum_fresh()
         with ForumStore(self.db_path) as store:
             return search_knowledge_records(
                 store.conn,
@@ -125,10 +128,12 @@ class EvolutionService:
             )
 
     def search_forum(self, query: str, top_k: int = 5) -> list[dict[str, Any]]:
+        self._ensure_forum_fresh()
         with ForumStore(self.db_path) as store:
             return search_forum_records(store.conn, query, top_k=top_k)
 
     def get_post(self, topic_id: str) -> dict[str, Any] | None:
+        self._ensure_forum_fresh()
         with ForumStore(self.db_path) as store:
             topic = store.get_topic(topic_id)
         if topic is None:
@@ -163,6 +168,9 @@ class EvolutionService:
         include_drafts: bool = False,
     ) -> dict[str, Any]:
         return WikiService(self.db_path).export_wiki(output_dir, include_drafts=include_drafts)
+
+    def _ensure_forum_fresh(self) -> None:
+        ForumIndexService(self.db_path).auto_refresh_if_needed()
 
     def _lint_page_payload(
         self,

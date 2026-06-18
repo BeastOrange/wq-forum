@@ -12,6 +12,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from wq_forum_rag.cli import app
+from wq_forum_rag.indexer import ForumIndexService
 from wq_forum_rag.knowledge import KnowledgeStore
 from wq_forum_rag.mcp_server import (
     find_by_exact,
@@ -95,6 +96,53 @@ def _write_fixture_only_t1(json_path: Path) -> None:
     json_path.write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _write_fixture_with_t3(json_path: Path) -> None:
+    payload = {
+        "byCommunity": {
+            "c1": {
+                "id": "c1",
+                "title": "Alpha Lab",
+                "followers": 12,
+                "posts": 3,
+                "url": "https://example.com/community/c1",
+                "topics": {
+                    "t1": {
+                        "id": "t1",
+                        "author": "alice",
+                        "commentNum": 3,
+                        "datetime": "2026-04-28T13:00:00Z",
+                        "postContent": "<p>Alpha decay and neutralization notes.</p>",
+                        "title": "Alpha decay",
+                        "url": "https://example.com/t1",
+                        "voteNum": 10,
+                    },
+                    "t2": {
+                        "id": "t2",
+                        "author": "bob",
+                        "commentNum": 1,
+                        "datetime": "2026-04-28T13:10:00Z",
+                        "postContent": "<p>Portfolio neutralization checklist.</p>",
+                        "title": "Neutralization checklist",
+                        "url": "https://example.com/t2",
+                        "voteNum": 8,
+                    },
+                    "t3": {
+                        "id": "t3",
+                        "author": "dave",
+                        "commentNum": 0,
+                        "datetime": "2026-04-28T13:30:00Z",
+                        "postContent": "<p>New alpha turnover ideas with decay tuning.</p>",
+                        "title": "Turnover ideas",
+                        "url": "https://example.com/t3",
+                        "voteNum": 6,
+                    },
+                },
+            }
+        }
+    }
+    json_path.write_text(json.dumps(payload), encoding="utf-8")
+
+
 def test_cli_contract_end_to_end(tmp_path: Path) -> None:
     json_path = tmp_path / "forum.json"
     db_path = tmp_path / "forum.sqlite3"
@@ -153,6 +201,45 @@ def test_mcp_tool_contract_without_client(tmp_path: Path) -> None:
 
     reindex_payload = rebuild_search_index(db=str(db_path))
     assert reindex_payload["fts_available"] is True
+
+
+def test_search_auto_refreshes_when_source_json_changes(tmp_path: Path, monkeypatch) -> None:
+    json_path = tmp_path / "WQPCommunityState_20260618_142702.json"
+    db_path = tmp_path / "forum.sqlite3"
+    _write_fixture(json_path)
+    runner = CliRunner()
+    runner.invoke(app, ["refresh", str(json_path), "--db", str(db_path), "--rebuild"])
+
+    _write_fixture_with_t3(json_path)
+    monkeypatch.setenv("WQ_FORUM_RAG_SOURCE", str(json_path))
+
+    search_payload = search_forum("turnover ideas", db=str(db_path), top_k=3)
+    assert search_payload["results"][0]["topic_id"] == "t3"
+
+    post_payload = get_post("t3", db=str(db_path))
+    assert post_payload["post"]["title"] == "Turnover ideas"
+
+
+def test_auto_refresh_returns_locked_status_when_write_lock_is_busy(tmp_path: Path, monkeypatch) -> None:
+    json_path = tmp_path / "WQPCommunityState_20260618_142702.json"
+    db_path = tmp_path / "forum.sqlite3"
+    _write_fixture(json_path)
+    runner = CliRunner()
+    runner.invoke(app, ["refresh", str(json_path), "--db", str(db_path), "--rebuild"])
+
+    _write_fixture_with_t3(json_path)
+    monkeypatch.setenv("WQ_FORUM_RAG_SOURCE", str(json_path))
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("BEGIN EXCLUSIVE")
+        payload = ForumIndexService(db_path).auto_refresh_if_needed()
+    finally:
+        conn.rollback()
+        conn.close()
+
+    assert payload["status"] == "locked"
+    assert payload["json"] == str(json_path)
 
 
 def test_refresh_command_prunes_orphans_and_commits_manifest(tmp_path: Path) -> None:
